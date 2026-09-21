@@ -1,4 +1,0 @@
--keep class org.webrtc.** { *; }
--keep class io.socket.** { *; }
--dontwarn org.webrtc.**
--keepattributes *Annotation*

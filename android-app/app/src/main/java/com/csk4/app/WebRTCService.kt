@@ -57,7 +57,7 @@ class WebRTCService(private val ctx: Context, private val deviceId: String) {
                 cameraCapturer = createCameraCapturer(cameraFacing)
                 if (cameraCapturer != null) {
                     videoSource = factory!!.createVideoSource(cameraCapturer!!.isScreencast)
-                    cameraCapturer!!.initialize(surfaceHelper, ctx, videoSource)
+                    cameraCapturer!!.initialize(surfaceHelper, ctx, videoSource!!.capturerObserver)
                     cameraCapturer!!.startCapture(1280, 720, 30)
                     videoTrack = factory!!.createVideoTrack("video0", videoSource)
                     videoTrack?.setEnabled(true)
@@ -150,7 +150,8 @@ class WebRTCService(private val ctx: Context, private val deviceId: String) {
             peerConnection?.setRemoteDescription(SimpleSdpObserver(), sdp)
 
             peerConnection?.createAnswer(object : SimpleSdpObserver() {
-                override fun onCreateSuccess(desc: SessionDescription) {
+                override fun onCreateSuccess(desc: SessionDescription?) {
+                    if (desc == null) return
                     peerConnection?.setLocalDescription(SimpleSdpObserver(), desc)
                     try {
                         val signal = JSONObject().apply { put("sdp", desc.description) }

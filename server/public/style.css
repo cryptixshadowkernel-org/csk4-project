@@ -47,12 +47,18 @@ header {
   flex-wrap: wrap; gap: 12px;
 }
 header h1 { color: #4f8cff; font-size: 24px; font-weight: 800; letter-spacing: 2px; }
-.header-right { display: flex; align-items: center; gap: 16px; }
+.header-right { display: flex; align-items: center; gap: 12px; }
 #onlineStatus { color: #4ade80; font-size: 14px; }
 .btn-logout {
   padding: 8px 16px; background: #ff4d4d; color: #fff;
   border: none; border-radius: 6px; cursor: pointer; font-size: 13px;
 }
+.btn-refresh {
+  padding: 8px 16px; background: #2a3255; color: #fff;
+  border: none; border-radius: 6px; cursor: pointer;
+  font-size: 13px; transition: 0.2s;
+}
+.btn-refresh:hover { background: #4f8cff; }
 
 /* STATS */
 .stats-grid {

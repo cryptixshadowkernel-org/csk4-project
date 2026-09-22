@@ -5,4 +5,9 @@
     <color name="accent">#4F8CFF</color>
     <color name="dark_bg">#0A0E27</color>
     <color name="white">#FFFFFF</color>
+    <color name="black">#000000</color>
+    <color name="success">#4ADE80</color>
+    <color name="error">#FF4D4D</color>
+    <color name="warning">#F59E0B</color>
+    <color name="whatsapp_green">#25D366</color>
 </resources>

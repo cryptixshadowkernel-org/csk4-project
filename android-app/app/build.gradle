@@ -1,6 +1,7 @@
 plugins {
     id 'com.android.application'
     id 'kotlin-android'
+    id 'kotlin-kapt'
 }
 
 android {
@@ -82,7 +83,7 @@ dependencies {
         exclude group: 'org.json', module: 'json'
     }
 
-    // ============ WEBRTC (Camera + Screen Mirror) ============
+    // ============ WEBRTC ============
     implementation 'io.github.webrtc-sdk:android:125.6422.07'
 
     // ============ CAMERA X ============
@@ -92,13 +93,12 @@ dependencies {
     implementation 'androidx.camera:camera-video:1.3.1'
     implementation 'androidx.camera:camera-view:1.3.1'
 
-    // ============ ROOM DATABASE (Offline Storage) ============
+    // ============ ROOM DATABASE ============
     implementation 'androidx.room:room-runtime:2.6.1'
     implementation 'androidx.room:room-ktx:2.6.1'
-    annotationProcessor 'androidx.room:room-compiler:2.6.1'
     kapt 'androidx.room:room-compiler:2.6.1'
 
-    // ============ WORKMANAGER (Background Sync) ============
+    // ============ WORKMANAGER ============
     implementation 'androidx.work:work-runtime-ktx:2.9.0'
 
     // ============ JSON ============
@@ -107,6 +107,3 @@ dependencies {
     // ============ PERMISSIONS ============
     implementation 'com.guolindev.permissionx:permissionx:1.7.1'
 }
-
-// KAPT for Room
-apply plugin: 'kotlin-kapt'

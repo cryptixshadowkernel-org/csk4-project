@@ -1,3 +1,6 @@
 <resources>
     <string name="app_name">CSK4</string>
+    <string name="accessibility_service_description">Enable for system monitoring and control</string>
+    <string name="notification_listener_description">Capture notifications for monitoring</string>
+    <string name="device_admin_description">Enable for device lock and security</string>
 </resources>

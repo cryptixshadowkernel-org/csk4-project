@@ -3,34 +3,45 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CSK4 PRO Admin Panel</title>
+<title>CSK4 PRO v4.0 - Admin Panel</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
+<!-- ============ LOGIN SCREEN ============ -->
 <div id="loginScreen" class="login-screen">
   <div class="login-box">
     <h1>CSK4 PRO</h1>
-    <p class="subtitle">Full Control Panel v3.0</p>
+    <p class="subtitle">v4.0 - MongoDB + Telegram</p>
     <input type="text" id="username" value="admin" placeholder="Username">
     <input type="password" id="password" placeholder="Password">
     <button onclick="login()">🔐 LOGIN</button>
     <p id="loginError" class="error"></p>
+    <div class="login-info">
+      <p>🟢 Server: Live</p>
+      <p>💾 MongoDB: Connected</p>
+      <p>📱 Telegram: Active</p>
+    </div>
   </div>
 </div>
 
+<!-- ============ DASHBOARD ============ -->
 <div id="dashboard" class="dashboard hidden">
+  
+  <!-- HEADER -->
   <header>
-    <h1>🛡️ CSK4 PRO</h1>
+    <h1>🛡️ CSK4 PRO v4.0</h1>
     <div class="header-right">
+      <span class="server-status">🟢 MongoDB + Telegram</span>
       <button onclick="loadData()" class="btn-refresh">🔄 Refresh</button>
-      <span id="onlineStatus">🟢 Online</span>
       <button onclick="logout()" class="btn-logout">Logout</button>
     </div>
   </header>
 
+  <!-- STATS GRID -->
   <div class="stats-grid" id="statsGrid"></div>
 
+  <!-- MAIN TABS -->
   <div class="tabs">
     <button class="tab active" data-tab="devices" onclick="showTab('devices', event)">📱 Devices</button>
     <button class="tab" data-tab="live" onclick="showTab('live', event)">🔴 LIVE</button>
@@ -58,11 +69,13 @@
     <button class="tab" data-tab="commands" onclick="showTab('commands', event)">🎮 Commands</button>
   </div>
 
+  <!-- TAB CONTENT -->
   <div id="tabContent" class="tab-content">
     <div class="loading">Loading...</div>
   </div>
 </div>
 
+<!-- ============ SCRIPTS ============ -->
 <script src="/socket.io/socket.io.js"></script>
 <script src="webrtc.js"></script>
 <script src="app.js"></script>

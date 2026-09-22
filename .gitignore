@@ -2,10 +2,13 @@
 .DS_Store
 *.log
 *.tmp
+Thumbs.db
 
 # NODE
 node_modules/
 .env
+.env.local
+.env.*.local
 server/uploads/
 
 # ANDROID
@@ -16,11 +19,27 @@ server/uploads/
 build/
 *.apk
 *.aab
+*.ap_
+*.dex
+*.class
+bin/
+gen/
+out/
+release/
 *.keystore
+!debug.keystore
 android-app/.gradle/
 android-app/app/build/
 android-app/build/
 android-app/local.properties
+android-app/.idea/
 
 # IDE
 .vscode/
+*.swp
+*.swo
+*~
+
+# BUILD ARTIFACTS
+*.jar
+!gradle/wrapper/gradle-wrapper.jar

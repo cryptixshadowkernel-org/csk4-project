@@ -10,13 +10,13 @@ body { background: #0a0e27; color: #e0e0e0; min-height: 100vh; }
 }
 .login-box {
   background: #141a33; padding: 40px; border-radius: 16px;
-  width: 90%; max-width: 400px;
+  width: 90%; max-width: 420px;
   box-shadow: 0 20px 60px rgba(0,0,0,0.5);
   border: 1px solid #2a3255;
 }
 .login-box h1 {
-  color: #4f8cff; font-size: 32px; text-align: center;
-  letter-spacing: 4px; font-weight: 800;
+  color: #4f8cff; font-size: 36px; text-align: center;
+  letter-spacing: 5px; font-weight: 800;
 }
 .subtitle {
   text-align: center; color: #6b7a99;
@@ -35,10 +35,15 @@ body { background: #0a0e27; color: #e0e0e0; min-height: 100vh; }
 }
 .login-box button:hover { background: #3a7aff; transform: translateY(-2px); }
 .error { color: #ff4d4d; text-align: center; margin-top: 12px; font-size: 14px; }
+.login-info {
+  margin-top: 24px; padding-top: 20px;
+  border-top: 1px solid #2a3255; text-align: center;
+}
+.login-info p { color: #6b7a99; font-size: 12px; margin: 6px 0; }
 
 /* ============ DASHBOARD ============ */
 .hidden { display: none !important; }
-.dashboard { padding: 20px; max-width: 1400px; margin: 0 auto; }
+.dashboard { padding: 20px; max-width: 1500px; margin: 0 auto; }
 
 header {
   display: flex; justify-content: space-between;
@@ -47,8 +52,8 @@ header {
   flex-wrap: wrap; gap: 12px;
 }
 header h1 { color: #4f8cff; font-size: 24px; font-weight: 800; letter-spacing: 2px; }
-.header-right { display: flex; align-items: center; gap: 12px; }
-#onlineStatus { color: #4ade80; font-size: 14px; }
+.header-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.server-status { color: #4ade80; font-size: 13px; }
 .btn-logout {
   padding: 8px 16px; background: #ff4d4d; color: #fff;
   border: none; border-radius: 6px; cursor: pointer; font-size: 13px;
@@ -63,7 +68,7 @@ header h1 { color: #4f8cff; font-size: 24px; font-weight: 800; letter-spacing: 2
 /* ============ STATS ============ */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 12px; margin-bottom: 24px;
 }
 .stat-card {
@@ -72,7 +77,7 @@ header h1 { color: #4f8cff; font-size: 24px; font-weight: 800; letter-spacing: 2
   transition: 0.2s;
 }
 .stat-card:hover { border-color: #4f8cff; transform: translateY(-3px); }
-.stat-value { font-size: 26px; font-weight: 700; color: #4f8cff; }
+.stat-value { font-size: 24px; font-weight: 700; color: #4f8cff; }
 .stat-label {
   color: #6b7a99; font-size: 10px; margin-top: 4px;
   text-transform: uppercase; letter-spacing: 1px; font-weight: 600;

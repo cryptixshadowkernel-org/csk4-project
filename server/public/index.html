@@ -3,7 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CSK4 PRO v4.0 - Admin Panel</title>
+<meta name="theme-color" content="#0a0e27">
+<meta name="description" content="CSK4 PRO - Device Management Panel">
+<title>CSK4 PRO v4.2 - Admin Panel</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -12,15 +14,25 @@
 <div id="loginScreen" class="login-screen">
   <div class="login-box">
     <h1>CSK4 PRO</h1>
-    <p class="subtitle">v4.0 - MongoDB + Telegram</p>
-    <input type="text" id="username" value="admin" placeholder="Username">
-    <input type="password" id="password" placeholder="Password">
-    <button onclick="login()">🔐 LOGIN</button>
+    <p class="subtitle">v4.2 - MongoDB + Telegram</p>
+    <input 
+      type="text" 
+      id="username" 
+      value="admin" 
+      placeholder="Username"
+      autocomplete="username"
+      spellcheck="false">
+    <input 
+      type="password" 
+      id="password" 
+      placeholder="Password"
+      autocomplete="current-password">
+    <button onclick="login()" type="button">🔐 LOGIN</button>
     <p id="loginError" class="error"></p>
     <div class="login-info">
-      <p>🟢 Server: Live</p>
-      <p id="loginMongoStatus">💾 MongoDB: Check after login</p>
-      <p id="loginTgStatus">📱 Telegram: Check after login</p>
+      <p id="loginServerStatus">🟢 Server: Check</p>
+      <p id="loginMongoStatus">💾 MongoDB: Check</p>
+      <p id="loginTgStatus">📱 Telegram: Check</p>
     </div>
   </div>
 </div>
@@ -30,11 +42,11 @@
   
   <!-- HEADER -->
   <header>
-    <h1>🛡️ CSK4 PRO v4.0</h1>
+    <h1>🛡️ CSK4 PRO v4.2</h1>
     <div class="header-right">
-      <span class="server-status">🟢 MongoDB + Telegram</span>
-      <button onclick="loadData()" class="btn-refresh">🔄 Refresh</button>
-      <button onclick="logout()" class="btn-logout">Logout</button>
+      <span class="server-status" id="headerStatus">🟢 MongoDB + Telegram</span>
+      <button onclick="loadData()" class="btn-refresh" type="button">🔄 Refresh</button>
+      <button onclick="logout()" class="btn-logout" type="button">Logout</button>
     </div>
   </header>
 
@@ -79,5 +91,27 @@
 <script src="/socket.io/socket.io.js"></script>
 <script src="webrtc.js"></script>
 <script src="app.js"></script>
+
+<script>
+// ✅ Inline server status check (before login)
+(function() {
+  const url = window.location.origin + '/api/admin/status';
+  fetch(url)
+    .then(r => r.json())
+    .then(s => {
+      const srv = document.getElementById('loginServerStatus');
+      const mongo = document.getElementById('loginMongoStatus');
+      const tg = document.getElementById('loginTgStatus');
+      if (srv) srv.textContent = '🟢 Server: Live';
+      if (mongo) mongo.textContent = s.mongo ? '💾 MongoDB: Connected' : '💾 MongoDB: Not connected';
+      if (tg) tg.textContent = s.telegram ? '📱 Telegram: Active' : '📱 Telegram: Not configured';
+    })
+    .catch(() => {
+      const srv = document.getElementById('loginServerStatus');
+      if (srv) srv.textContent = '🔴 Server: Offline';
+    });
+})();
+</script>
+
 </body>
 </html>

